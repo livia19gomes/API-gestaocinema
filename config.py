@@ -8,3 +8,9 @@ DB_NAME = r'D:\API-gestaocinema\Banco\BANCO.FDB'
 DB_USER = 'sysdba'
 DB_PASSWORD = 'sysdba'
 
+
+MAIL_PORT = 587
+MAIL_USE_TLS = True
+MAIL_USERNAME = 'seuemail@gmail.com'
+MAIL_PASSWORD = 'suasenhadeapp'
+

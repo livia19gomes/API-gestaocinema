@@ -6,8 +6,16 @@ import jwt
 from fpdf import FPDF
 import os
 from flask_bcrypt import generate_password_hash, check_password_hash
+from flask_mail import Mail, Message
+
 
 app = Flask(__name__)
+
+
+# porta = app.config['MAIL_PORT']
+# use_tls = app.config['MAIL_USE_TLS']
+# name = app.config['MAIL_USERNAME']
+# password = app.config['MAIL_PASSWORD']
 
 CORS(app, origins=["*"])
 
@@ -44,6 +52,26 @@ def validar_senha(senha):
         return jsonify({"error": "A senha deve conter pelo menos dois números"}), 400
 
     return True
+
+@app.route('/cadastros', methods=['GET'])
+def usuarios():
+        cur = con.cursor()
+        cur.execute("SELECT id_cadastro, nome, telefone, email, senha, tipo FROM cadastros")
+        usuarios = cur.fetchall()
+        usuarios_dic = []
+
+        for usuario in usuarios:
+            usuarios_dic.append({
+            'id_usuario': usuario[0],
+            'nome': usuario[1],
+            'telefone': usuario[2],
+            'email': usuario[3],
+            'senha': usuario[4],
+            'tipo': usuario[5]
+            })
+
+        return jsonify(mensagem='Lista de usuarios', usuarios=usuarios_dic)
+
 
 
 
@@ -611,4 +639,8 @@ def deletar_reserva(id):
         'message': "Reserva excluída com sucesso!",
         'id_reserva': id
     })
+
+
+
+
 
