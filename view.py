@@ -444,4 +444,3 @@ def deletar_filme(id):
         'id_filme': id
     })
 
-@app.route
