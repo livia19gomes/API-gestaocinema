@@ -296,7 +296,7 @@ def logout():
 @app.route('/filme_imagem', methods=['POST'])
 def filme_imagem():
     token = request.headers.get('Authorization')  # Verifica token
-    print(token)  # Exibe o token
+
     if not token:  # Se não tiver token
         return jsonify({'mensagem': 'Token de autenticação necessário'}), 401
 
@@ -442,5 +442,171 @@ def deletar_filme(id):
     return jsonify({
         'message': "Filme excluído com sucesso!",
         'id_filme': id
+    })
+
+
+@app.route('/sessoes', methods=['POST'])
+def cadastrar_sessao():
+    data = request.get_json()
+    id_sala = data.get('id_sala')
+    horario = data.get('horario')
+    data_sessao = data.get('data_sessao')
+    id_filme = data.get('id_filme')
+
+    if not all([id_sala, horario, data_sessao, id_filme]):
+        return jsonify({"error": "Todos os campos são obrigatórios"}), 400
+
+    cur = con.cursor()
+    # Verifica se o filme e a sala existem antes de inserir a sessão
+    cur.execute("SELECT 1 FROM filmes WHERE id_filme = ?", (id_filme,))
+    if not cur.fetchone():
+        return jsonify({"error": "Filme não encontrado"}), 404
+
+    cur.execute("SELECT 1 FROM salas WHERE id_salas = ?", (id_sala,))
+    if not cur.fetchone():
+        return jsonify({"error": "Sala não encontrada"}), 404
+
+    # Insere a nova sessão
+    cur.execute("INSERT INTO sessoes (id_sala, horario, data_sessao, id_filme) VALUES (?, ?, ?, ?)",
+                (id_sala, horario, data_sessao, id_filme))
+
+    con.commit()
+    cur.close()
+
+    return jsonify({"message": "Sessão adicionada com sucesso!"}), 201
+
+
+@app.route('/sessoes/<int:id>', methods=['PUT'])
+def editar_sessao(id):
+    cur = con.cursor()
+
+    # Busca a sessão pelo id
+    cur.execute("SELECT id_sessao, id_sala, horario, data_sessao, id_filme FROM sessoes WHERE id_sessao =?", (id,))
+    sessao_data = cur.fetchone()
+
+    if not sessao_data:
+        cur.close()
+        return jsonify({"error": "Sessão não foi encontrada"}), 404
+
+    # Recebe os dados da requisição
+    data = request.get_json()
+    id_sala = data.get('id_sala', sessao_data[1])
+    horario = data.get('horario', sessao_data[2])
+    data_sessao = data.get('data_sessao', sessao_data[3])
+    id_filme = data.get('id_filme', sessao_data[4])
+
+    # Atualiza os dados da sessão
+    cur.execute("""UPDATE sessoes SET id_sala = ?, horario = ?, data_sessao = ?, id_filme = ? WHERE id_sessao = ?""",
+                (id_sala, horario, data_sessao, id_filme, id))
+
+    con.commit()
+    cur.close()
+
+    return jsonify({
+        'message': "Sessão atualizada com sucesso!",
+        'sessao': {
+            'id_sessao': id,
+            'id_sala': id_sala,
+            'horario': horario,
+            'data_sessao': data_sessao,
+            'id_filme': id_filme
+        }
+    })
+
+@app.route('/sessoes/<int:id>', methods=['DELETE'])
+def deletar_sessao(id):
+    cur = con.cursor()
+
+    # Verifica se a sessão existe
+    cur.execute("SELECT 1 FROM sessoes WHERE id_sessao = ?", (id,))
+    if not cur.fetchone():
+        cur.close()
+        return jsonify({"error": "Sessão não encontrada"}), 404
+
+    # Deleta a sessão
+    cur.execute("DELETE FROM sessoes WHERE id_sessao = ?", (id,))
+    con.commit()
+    cur.close()
+
+    return jsonify({
+        'message': "Sessão excluída com sucesso!",
+        'id_sessao': id
+    })
+
+@app.route('/reservas', methods=['POST'])
+def fazer_reserva():
+    token = request.headers.get('Authorization')  # Verifica token
+
+    if not token:  # Se não tiver token
+        return jsonify({'mensagem': 'Token de autenticação necessário'}), 401
+
+    token = remover_bearer(token)
+    try:
+        payload = jwt.decode(token, senha_secreta, algorithms=['HS256'])  # Identifica o código
+        id_cadastro = payload['id_usuario']  # Extrai id do usuário
+    except jwt.ExpiredSignatureError:
+        return jsonify({'mensagem': 'Token expirado'}), 401
+    except jwt.InvalidTokenError:
+        return jsonify({'mensagem': 'Token inválido'}), 401
+
+    cur = con.cursor()
+    data = request.get_json()
+    id_sessao = data.get('id_sessao')
+    id_assento = data.get('id_assento')
+
+
+    # Verificar se a sessão e o assento existem
+    cur.execute("SELECT 1 FROM SESSOES WHERE ID_SESSAO = ?", (id_sessao,))
+    if not cur.fetchone():
+        cur.close()
+        return jsonify({"error": "Sessão não encontrada"}), 404
+
+    cur.execute("SELECT 1 FROM ASSENTO WHERE ID_ASSENTO = ?", (id_assento,))
+    if not cur.fetchone():
+        cur.close()
+        return jsonify({"error": "Assento não encontrado"}), 404
+
+    # Verificar se o assento já foi reservado para essa sessão
+    cur.execute("SELECT 1 FROM RESERVA WHERE ID_SESSAO = ? AND ID_ASSENTO = ?", (id_sessao, id_assento))
+    if cur.fetchone():
+        cur.close()
+        return jsonify({"error": "Assento já reservado para essa sessão"}), 400
+
+    # Inserir a nova reserva
+    cur.execute("""INSERT INTO RESERVA (ID_SESSAO, ID_ASSENTO, ID_CADASTRO)VALUES ( ?, ?, ?)""",
+                (id_sessao, id_assento, id_cadastro))
+
+    con.commit()
+    cur.close()
+
+    return jsonify({
+        'message': "Reserva realizada com sucesso!",
+        'reserva': {
+            'id_sessao': id_sessao,
+            'id_assento': id_assento,
+            'id_cadastro': id_cadastro,
+
+        }
+    }), 201
+
+
+@app.route('/reservas/<int:id>', methods=['DELETE'])
+def deletar_reserva(id):
+    cur = con.cursor()
+
+    # Verificar se a reserva existe
+    cur.execute("SELECT 1 FROM RESERVA WHERE ID_RESERVA = ?", (id,))
+    if not cur.fetchone():
+        cur.close()
+        return jsonify({"error": "Reserva não encontrada"}), 404
+
+    # Excluir a reserva
+    cur.execute("DELETE FROM RESERVA WHERE ID_RESERVA = ?", (id,))
+    con.commit()
+    cur.close()
+
+    return jsonify({
+        'message': "Reserva excluída com sucesso!",
+        'id_reserva': id
     })
 
