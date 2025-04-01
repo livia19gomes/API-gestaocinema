@@ -443,3 +443,5 @@ def deletar_filme(id):
         'message': "Filme excluído com sucesso!",
         'id_filme': id
     })
+
+@app.route
