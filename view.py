@@ -46,24 +46,6 @@ def validar_senha(senha):
     return True
 
 
-@app.route('/cadastros', methods=['GET'])
-def usuarios():
-    cur = con.cursor()
-    cur.execute("SELECT id_cadastro, nome, telefone, email, senha, tipo FROM cadastros")
-    usuarios = cur.fetchall()
-    usuarios_dic = []
-
-    for usuario in usuarios:
-        usuarios_dic.append({
-            'id_usuario': usuario[0],
-            'nome': usuario[1],
-            'telefone': usuario[2],
-            'email': usuario[3],
-            'senha': usuario[4],
-            'tipo': usuario[5]
-        })
-
-    return jsonify(mensagem='Lista de usuarios', usuarios=usuarios_dic)
 
 
 @app.route('/cadastros', methods=['POST'])
@@ -474,6 +456,26 @@ def cadastrar_sessao():
     cur.close()
 
     return jsonify({"message": "Sessão adicionada com sucesso!"}), 201
+
+
+@app.route('/sessoes/<int:id_filme>', methods=['GET'])
+def listar_sessoes(id_filme):
+    cur = con.cursor()
+    cur.execute("SELECT id_sessao, id_sala, horario, data_sessao, id_filme FROM sessoes where id_filme = ?",(id_filme,))
+    sessoes = cur.fetchall()
+    sessoes_dic = []
+
+    for sessao in sessoes:
+        sessoes_dic.append({
+            'id_sessao': sessao[0],
+            'id_sala': sessao[1],
+            'horario': sessao[2],
+            'data_sessao': sessao[3],
+            'id_filme': sessao[4]
+        })
+
+    return jsonify(mensagem='Lista de sessoes', sessoes=sessoes_dic)
+
 
 
 @app.route('/sessoes/<int:id>', methods=['PUT'])
