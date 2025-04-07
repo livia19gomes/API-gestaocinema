@@ -6,16 +6,20 @@ import jwt
 from fpdf import FPDF
 import os
 from flask_bcrypt import generate_password_hash, check_password_hash
-from flask_mail import Mail, Message
+import unicodedata
+import smtplib
+from threading import Thread
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
+
+
+
 
 
 app = Flask(__name__)
 
 
-# porta = app.config['MAIL_PORT']
-# use_tls = app.config['MAIL_USE_TLS']
-# name = app.config['MAIL_USERNAME']
-# password = app.config['MAIL_PASSWORD']
+
 
 CORS(app, origins=["*"])
 
@@ -26,14 +30,83 @@ if not os.path.exists(app.config['UPLOAD_FILMES']):
     os.makedirs(app.config['UPLOAD_FILMES'])
 
 
+#
+# def enviar_email_para(destinatario, texto):
+#     """
+#     Função para enviar e-mail com debug.
+#     """
+#     try:
+#         print("Montando e-mail...")
+#         msg = MIMEText(texto, 'plain')
+#         msg['Subject'] = 'Mensagem automática'
+#         msg['From'] = EMAIL_ORIGEM
+#         msg['To'] = destinatario
+#
+#
+#
+#
+#         print("Conectando ao servidor SMTP...")
+#         servidor = smtplib.SMTP(SMTP_SERVER, SMTP_PORT, timeout=10)
+#         print('depois que conecteio')
+#         servidor.ehlo()
+#         servidor.starttls()
+#         print('antes da senha')
+#         servidor.login(EMAIL_ORIGEM, SENHA)
+#         print('depois da senha')
+#         servidor.send_message(msg)
+#         print('sendmenssaregefd')
+#         servidor.quit()
+#         print("E-mail enviado com sucesso.")
+#     except Exception as e:
+#         print("Erro ao enviar e-mail:", e)
+#         raise  # Repassa o erro para a função principal poder lidar
+#
+
+
+def normalizar_texto(texto):
+    if texto:
+        return unicodedata.normalize('NFC', texto)
+    return texto
+
+def enviar_email_para(email_destinatario, texto):
+    def task_envio():
+        servidor_smtp = 'smtp.gmail.com'
+        porta_smtp = 587
+        remetente = 'primecine00@gmail.com'
+        senha = 'zzzj kwhn mnhb vtrx'  # Use senha de app do Gmail
+
+        assunto = 'assunto'
+        corpo = texto  # Você já está passando o texto como argumento
+
+        # Agora usamos MIMEMultipart corretamente
+        msg = MIMEMultipart()
+        msg['From'] = remetente
+        msg['To'] = email_destinatario
+        msg['Subject'] = assunto
+
+        # Anexando o corpo como plain text
+        msg.attach(MIMEText(corpo, 'plain'))
+
+        try:
+            server = smtplib.SMTP(servidor_smtp, porta_smtp, timeout=10)
+            server.starttls()
+            server.login(remetente, senha)
+            server.sendmail(remetente, email_destinatario, msg.as_string())
+            server.quit()
+            print(f"E-mail enviado para {email_destinatario}")
+        except Exception as e:
+            print(f"Erro ao enviar e-mail: {e}")
+
+    Thread(target=task_envio, daemon=True).start()
+
 def remover_bearer(token):  # Remove o bearer
     if token.startswith('Bearer '):
         return token[len('Bearer '):]
     else:
         return token
 
-def generate_token(user_id):  # Gera um token para o usuario
-    payload = {'id_usuario': user_id}
+def generate_token(user_id, email):  # Gera um token para o usuario
+    payload = {'id_usuario': user_id, 'email':email}
     token = jwt.encode(payload, senha_secreta, algorithm='HS256')
     return token
 
@@ -243,6 +316,7 @@ def login():
 
     if not usuario:
         return jsonify({"error": "Usuário ou senha inválidos."}), 401
+    email = usuario[6]
 
     ativo = usuario[3]
 
@@ -252,7 +326,7 @@ def login():
         id_cadastro = usuario[2]
 
         if check_password_hash(senha_armazenada, senha):
-            token = generate_token(id_cadastro)
+            token = generate_token(id_cadastro, email)
 
             return jsonify({
                 'message': "Login realizado com sucesso!",
@@ -392,26 +466,29 @@ def atualizar_filme(id):
     cur.execute("SELECT id_filme, titulo, genero, classificacao, sinopse FROM FILMES WHERE id_filme =?", (id,))
     filme_data = cur.fetchone()
 
-    titulo_armazenado = filme_data[1]  # Armazena o título do filme
-
     if not filme_data:  # Se não existir, vai retornar um erro
         cur.close()
         return jsonify({"error": "Filme não foi encontrado"}), 404
 
-    titulo = request.form.get('titulo')
-    classificacao = request.form.get('classificacao')
-    genero = request.form.get('genero')
-    sinopse = request.form.get('sinopse')
+    titulo_armazenado = filme_data[1]  # Armazena o título do filme
+
+    # Captura os dados do formulário e normaliza
+    titulo = normalizar_texto(request.form.get('titulo'))
+    classificacao = normalizar_texto(request.form.get('classificacao'))
+    genero = normalizar_texto(request.form.get('genero'))
+    sinopse = normalizar_texto(request.form.get('sinopse'))
     imagem = request.files.get('imagem')  # Arquivo enviado
 
-    if titulo_armazenado != titulo:  # Se o título não for modificado
+    if titulo_armazenado != titulo:  # Verifica se o título foi modificado
         cur.execute("SELECT 1 FROM filmes WHERE titulo = ?", (titulo,))
-
         if cur.fetchone():  # Retorna com o erro
+            cur.close()
             return jsonify({"message": "Este filme já foi cadastrado!"}), 400
 
-    cur.execute("update filmes set titulo = ?, genero = ?, classificacao = ?, sinopse = ? where id_filme = ?",
-                (titulo, genero, classificacao, sinopse, id))  # Atualiza as informações trocadas
+    cur.execute(
+        "UPDATE filmes SET titulo = ?, genero = ?, classificacao = ?, sinopse = ? WHERE id_filme = ?",
+        (titulo, genero, classificacao, sinopse, id)
+    )
 
     con.commit()
     imagem_path = None
@@ -427,14 +504,13 @@ def atualizar_filme(id):
     return jsonify({
         'message': "Filme atualizado com sucesso!",
         'filmes': {
-            'titulo': titulo,
+            'titular': titulo,
             'genero': genero,
             'classificacao': classificacao,
             'sinopse': sinopse,
             'imagem_path': imagem_path
         }
     })
-
 
 @app.route('/filme_imagem/<int:id>', methods=['DELETE'])
 def deletar_filme(id):
@@ -489,7 +565,13 @@ def cadastrar_sessao():
 @app.route('/sessoes/<int:id_filme>', methods=['GET'])
 def listar_sessoes(id_filme):
     cur = con.cursor()
-    cur.execute("SELECT id_sessao, id_sala, horario, data_sessao, id_filme FROM sessoes where id_filme = ?",(id_filme,))
+    cur.execute("""
+    SELECT s.id_sessao, s.id_sala, sa.descricao, s.horario, s.data_sessao, s.id_filme, f.titulo
+    FROM sessoes s
+    LEFT JOIN FILMES f ON f.id_filme = s.id_filme
+    LEFT JOIN salas sa ON sa.id_salas = s.id_sala
+    WHERE s.id_filme = ?
+    """, (id_filme,))
     sessoes = cur.fetchall()
     sessoes_dic = []
 
@@ -497,13 +579,14 @@ def listar_sessoes(id_filme):
         sessoes_dic.append({
             'id_sessao': sessao[0],
             'id_sala': sessao[1],
-            'horario': sessao[2],
-            'data_sessao': sessao[3],
-            'id_filme': sessao[4]
+            'descricao': sessao[2],
+            'horario': sessao[3].strftime("%H:%M:%S"),  # transforma em string
+            'data_sessao': sessao[4].strftime("%Y-%m-%d"),  # idem
+            'id_filme': sessao[5],
+            'titulo':sessao[6]
         })
 
-    return jsonify(mensagem='Lista de sessoes', sessoes=sessoes_dic)
-
+    return jsonify({"mensagem": "Lista de sessoes", "sessoes": sessoes_dic})
 
 
 @app.route('/sessoes/<int:id>', methods=['PUT'])
@@ -562,62 +645,121 @@ def deletar_sessao(id):
         'message': "Sessão excluída com sucesso!",
         'id_sessao': id
     })
-
 @app.route('/reservas', methods=['POST'])
 def fazer_reserva():
-    token = request.headers.get('Authorization')  # Verifica token
-
-    if not token:  # Se não tiver token
+    token = request.headers.get('Authorization')
+    if not token:
         return jsonify({'mensagem': 'Token de autenticação necessário'}), 401
 
     token = remover_bearer(token)
     try:
-        payload = jwt.decode(token, senha_secreta, algorithms=['HS256'])  # Identifica o código
-        id_cadastro = payload['id_usuario']  # Extrai id do usuário
+        payload = jwt.decode(token, senha_secreta, algorithms=['HS256'])
+        id_cadastro = payload['id_usuario']
+        email = payload['email']
     except jwt.ExpiredSignatureError:
         return jsonify({'mensagem': 'Token expirado'}), 401
     except jwt.InvalidTokenError:
         return jsonify({'mensagem': 'Token inválido'}), 401
 
-    cur = con.cursor()
     data = request.get_json()
     id_sessao = data.get('id_sessao')
-    id_assento = data.get('id_assento')
+    id_assentos = data.get('id_assento')  # lista
 
+    if not isinstance(id_assentos, list) or not id_assentos:
+        return jsonify({'erro': 'id_assento deve ser uma lista com pelo menos um valor'}), 400
 
-    # Verificar se a sessão e o assento existem
+    cur = con.cursor()
+
+    # Verifica se a sessão existe
     cur.execute("SELECT 1 FROM SESSOES WHERE ID_SESSAO = ?", (id_sessao,))
     if not cur.fetchone():
         cur.close()
         return jsonify({"error": "Sessão não encontrada"}), 404
 
-    cur.execute("SELECT 1 FROM ASSENTO WHERE ID_ASSENTO = ?", (id_assento,))
-    if not cur.fetchone():
-        cur.close()
-        return jsonify({"error": "Assento não encontrado"}), 404
+    # Verifica se todos os assentos existem
+    query = f"SELECT ID_ASSENTO FROM ASSENTO WHERE ID_ASSENTO IN ({','.join('?' * len(id_assentos))})"
+    cur.execute(query, id_assentos)
+    assentos_existentes = [row[0] for row in cur.fetchall()]
 
-    # Verificar se o assento já foi reservado para essa sessão
-    cur.execute("SELECT 1 FROM RESERVA WHERE ID_SESSAO = ? AND ID_ASSENTO = ?", (id_sessao, id_assento))
-    if cur.fetchone():
+    if set(id_assentos) != set(assentos_existentes):
         cur.close()
-        return jsonify({"error": "Assento já reservado para essa sessão"}), 400
+        return jsonify({"error": "Um ou mais assentos não existem"}), 404
 
-    # Inserir a nova reserva
-    cur.execute("""INSERT INTO RESERVA (ID_SESSAO, ID_ASSENTO, ID_CADASTRO)VALUES ( ?, ?, ?)""",
-                (id_sessao, id_assento, id_cadastro))
+    # Verifica se algum assento já está reservado
+    query = f"SELECT ID_ASSENTO FROM RESERVA WHERE ID_SESSAO = ? AND ID_ASSENTO IN ({','.join('?' * len(id_assentos))})"
+    cur.execute(query, [id_sessao] + id_assentos)
+    reservados = [row[0] for row in cur.fetchall()]
+
+    if reservados:
+        cur.close()
+        return jsonify({"error": f"Os assentos {reservados} já estão reservados"}), 400
+
+    # Faz as reservas e guarda os IDs
+    id_reservas = []
+    for assento in id_assentos:
+        cur.execute("""
+            INSERT INTO RESERVA (ID_SESSAO, ID_ASSENTO, ID_CADASTRO)
+            VALUES (?, ?, ?)
+            RETURNING ID_RESERVA
+        """, (id_sessao, assento, id_cadastro))
+        id_reservas.append(cur.fetchone()[0])
 
     con.commit()
     cur.close()
 
-    return jsonify({
-        'message': "Reserva realizada com sucesso!",
-        'reserva': {
-            'id_sessao': id_sessao,
-            'id_assento': id_assento,
-            'id_cadastro': id_cadastro,
+    # Busca nome do usuário
+    cursor = con.cursor()
+    cursor.execute("SELECT nome FROM CADASTROS WHERE ID_CADASTRO = ?", (id_cadastro,))
+    nome_usuario = cursor.fetchone()[0]
+    cursor.close()
 
-        }
-    }), 201
+    # Busca detalhes da sessão (um só, pq todos os assentos são da mesma sessão)
+    cursor = con.cursor()
+    cursor.execute("""
+        SELECT f.titulo, sa.descricao, s.data_sessao, s.horario
+        FROM sessoes s
+        JOIN filmes f ON f.id_filme = s.ID_FILME
+        JOIN salas sa ON sa.ID_SALAS = s.ID_SALA
+        WHERE s.ID_SESSAO = ?
+    """, (id_sessao,))
+    titulo_filme, sala, data_sessao, horario = cursor.fetchone()
+    cursor.close()
+
+    texto = f"""Olá, {nome_usuario}!
+
+Sua reserva foi realizada com sucesso. Aqui estão os detalhes da sua sessão:
+
+🎬 Filme: {titulo_filme}  
+🎟 Sala: {sala}  
+📅 Data: {data_sessao}  
+⏰ Horário: {horario}  
+💺 Assentos: {', '.join(map(str, id_assentos))}
+
+Estamos ansiosos para te receber na sessão! Prepare a pipoca! 🍿✨
+
+Atenciosamente,  
+Equipe PrimeCine
+"""
+
+    mensagem = "Reserva realizada com sucesso!"
+    erro_email = None
+
+    try:
+        enviar_email_para(email, texto)
+    except Exception as e:
+        mensagem = "Reserva feita com sucesso, mas falha ao enviar e-mail."
+        erro_email = str(e)
+
+    return jsonify({
+        'mensagem': mensagem,
+        'reserva': {
+            'ids_reservas': id_reservas,
+            'id_sessao': id_sessao,
+            'id_assentos': id_assentos,
+            'id_cadastro': id_cadastro
+        },
+        'erro_email': erro_email
+    }), 200
 
 
 @app.route('/reservas/<int:id>', methods=['DELETE'])
