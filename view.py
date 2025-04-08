@@ -209,7 +209,7 @@ def deletar_Usuario(id):
 @app.route('/relatorio', methods=['GET'])
 def criar_pdf():
     cursor = con.cursor()
-    cursor.execute("SELECT ID_FILME, TITULO , GENERO , CLASSIFICACAO FROM filme")
+    cursor.execute("SELECT ID_FILME, TITULO , GENERO , CLASSIFICACAO FROM filmes")
     usuarios = cursor.fetchall()
     cursor.close()
 
@@ -647,6 +647,7 @@ def deletar_sessao(id):
     })
 @app.route('/reservas', methods=['POST'])
 def fazer_reserva():
+    # Autenticação via token
     token = request.headers.get('Authorization')
     if not token:
         return jsonify({'mensagem': 'Token de autenticação necessário'}), 401
@@ -661,9 +662,10 @@ def fazer_reserva():
     except jwt.InvalidTokenError:
         return jsonify({'mensagem': 'Token inválido'}), 401
 
+    # Dados da requisição
     data = request.get_json()
     id_sessao = data.get('id_sessao')
-    id_assentos = data.get('id_assento')  # lista
+    id_assentos = data.get('id_assento')  # deve ser uma lista
 
     if not isinstance(id_assentos, list) or not id_assentos:
         return jsonify({'erro': 'id_assento deve ser uma lista com pelo menos um valor'}), 400
@@ -680,29 +682,37 @@ def fazer_reserva():
     query = f"SELECT ID_ASSENTO FROM ASSENTO WHERE ID_ASSENTO IN ({','.join('?' * len(id_assentos))})"
     cur.execute(query, id_assentos)
     assentos_existentes = [row[0] for row in cur.fetchall()]
-
     if set(id_assentos) != set(assentos_existentes):
         cur.close()
         return jsonify({"error": "Um ou mais assentos não existem"}), 404
 
-    # Verifica se algum assento já está reservado
-    query = f"SELECT ID_ASSENTO FROM RESERVA WHERE ID_SESSAO = ? AND ID_ASSENTO IN ({','.join('?' * len(id_assentos))})"
+    # Verifica se os assentos já estão reservados
+    query = f"""
+        SELECT ar.ID_ASSENTO
+        FROM ASSENTOS_RESERVADOS ar
+        JOIN RESERVA r ON ar.ID_RESERVA = r.ID_RESERVA
+        WHERE r.ID_SESSAO = ? AND ar.ID_ASSENTO IN ({','.join('?' * len(id_assentos))})
+    """
     cur.execute(query, [id_sessao] + id_assentos)
     reservados = [row[0] for row in cur.fetchall()]
-
     if reservados:
         cur.close()
         return jsonify({"error": f"Os assentos {reservados} já estão reservados"}), 400
 
-    # Faz as reservas e guarda os IDs
-    id_reservas = []
+    # Cria a reserva principal
+    cur.execute("""
+        INSERT INTO RESERVA (ID_SESSAO, ID_CADASTRO, STATUS)
+        VALUES (?, ?, ?)
+        RETURNING ID_RESERVA
+    """, (id_sessao, id_cadastro, 'Confirmada'))
+    id_reserva = cur.fetchone()[0]
+
+    # Relaciona os assentos com a reserva
     for assento in id_assentos:
         cur.execute("""
-            INSERT INTO RESERVA (ID_SESSAO, ID_ASSENTO, ID_CADASTRO)
-            VALUES (?, ?, ?)
-            RETURNING ID_RESERVA
-        """, (id_sessao, assento, id_cadastro))
-        id_reservas.append(cur.fetchone()[0])
+            INSERT INTO ASSENTOS_RESERVADOS (ID_RESERVA, ID_ASSENTO)
+            VALUES (?, ?)
+        """, (id_reserva, assento))
 
     con.commit()
     cur.close()
@@ -713,7 +723,7 @@ def fazer_reserva():
     nome_usuario = cursor.fetchone()[0]
     cursor.close()
 
-    # Busca detalhes da sessão (um só, pq todos os assentos são da mesma sessão)
+    # Busca detalhes da sessão
     cursor = con.cursor()
     cursor.execute("""
         SELECT f.titulo, sa.descricao, s.data_sessao, s.horario
@@ -725,25 +735,25 @@ def fazer_reserva():
     titulo_filme, sala, data_sessao, horario = cursor.fetchone()
     cursor.close()
 
+    # Monta e envia o e-mail
     texto = f"""Olá, {nome_usuario}!
 
 Sua reserva foi realizada com sucesso. Aqui estão os detalhes da sua sessão:
 
-🎬 Filme: {titulo_filme}  
-🎟 Sala: {sala}  
-📅 Data: {data_sessao}  
-⏰ Horário: {horario}  
+🎬 Filme: {titulo_filme}
+🎟 Sala: {sala}
+📅 Data: {data_sessao}
+⏰ Horário: {horario}
 💺 Assentos: {', '.join(map(str, id_assentos))}
 
 Estamos ansiosos para te receber na sessão! Prepare a pipoca! 🍿✨
 
-Atenciosamente,  
+Atenciosamente,
 Equipe PrimeCine
 """
 
     mensagem = "Reserva realizada com sucesso!"
     erro_email = None
-
     try:
         enviar_email_para(email, texto)
     except Exception as e:
@@ -753,7 +763,7 @@ Equipe PrimeCine
     return jsonify({
         'mensagem': mensagem,
         'reserva': {
-            'ids_reservas': id_reservas,
+            'id_reserva': id_reserva,
             'id_sessao': id_sessao,
             'id_assentos': id_assentos,
             'id_cadastro': id_cadastro
