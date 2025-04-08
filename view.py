@@ -512,23 +512,18 @@ def atualizar_filme(id):
         }
     })
 
-@app.route('/filme_imagem/<int:id>', methods=['DELETE'])
-def deletar_filme(id):
+@app.route('/filmes/<int:id_filme>/inativar', methods=['PUT'])
+def inativar_filme(id_filme):
     cur = con.cursor()
-
-    cur.execute("SELECT 1 FROM FILMES WHERE ID_FILME = ?", (id,))
+    cur.execute("SELECT 1 FROM FILMES WHERE ID_FILME = ?", (id_filme,))
     if not cur.fetchone():
-        cur.close()
-        return jsonify({"error": "Filme não encontrado"}), 404
+        return jsonify({'error': 'Filme não encontrado'}), 404
 
-    cur.execute("DELETE FROM filmes WHERE ID_filme = ?", (id,))
+    cur.execute("UPDATE FILMES SET ATIVO = 0 WHERE ID_FILME = ?", (id_filme,))
     con.commit()
     cur.close()
 
-    return jsonify({
-        'message': "Filme excluído com sucesso!",
-        'id_filme': id
-    })
+    return jsonify({'mensagem': 'Filme inativado com sucesso!'}), 200
 
 
 @app.route('/sessoes', methods=['POST'])
@@ -565,13 +560,10 @@ def cadastrar_sessao():
 @app.route('/sessoes/<int:id_filme>', methods=['GET'])
 def listar_sessoes(id_filme):
     cur = con.cursor()
-    cur.execute("""
-    SELECT s.id_sessao, s.id_sala, sa.descricao, s.horario, s.data_sessao, s.id_filme, f.titulo
-    FROM sessoes s
+    cur.execute("""SELECT s.id_sessao, s.id_sala, sa.descricao, s.horario, s.data_sessao, s.id_filme, f.titulo
+    FROM sessoes s 
     LEFT JOIN FILMES f ON f.id_filme = s.id_filme
-    LEFT JOIN salas sa ON sa.id_salas = s.id_sala
-    WHERE s.id_filme = ?
-    """, (id_filme,))
+    LEFT JOIN salas sa ON sa.id_salas = s.id_sala WHERE s.id_filme = ?""", (id_filme,))
     sessoes = cur.fetchall()
     sessoes_dic = []
 
@@ -585,7 +577,6 @@ def listar_sessoes(id_filme):
             'id_filme': sessao[5],
             'titulo':sessao[6]
         })
-
     return jsonify({"mensagem": "Lista de sessoes", "sessoes": sessoes_dic})
 
 
@@ -666,6 +657,11 @@ def fazer_reserva():
     data = request.get_json()
     id_sessao = data.get('id_sessao')
     id_assentos = data.get('id_assento')  # deve ser uma lista
+
+    try:
+        id_assentos = list(map(int, id_assentos))
+    except (ValueError, TypeError):
+        return jsonify({'erro': 'id_assento deve conter apenas valores inteiros'}), 400
 
     if not isinstance(id_assentos, list) or not id_assentos:
         return jsonify({'erro': 'id_assento deve ser uma lista com pelo menos um valor'}), 400
@@ -771,28 +767,73 @@ Equipe PrimeCine
         'erro_email': erro_email
     }), 200
 
-
-@app.route('/reservas/<int:id>', methods=['DELETE'])
-def deletar_reserva(id):
+@app.route('/assentos_reservados/<int:id_sessao>', methods=['GET'])
+def listar_assentos(id_sessao):
     cur = con.cursor()
 
-    # Verificar se a reserva existe
-    cur.execute("SELECT 1 FROM RESERVA WHERE ID_RESERVA = ?", (id,))
-    if not cur.fetchone():
-        cur.close()
-        return jsonify({"error": "Reserva não encontrada"}), 404
+    query = """
+        SELECT 
+            a.id_assento,
+            a.id_sala,
+            a.fileira,
+            a.numero,
+            r.id_sessao,
+            r.id_reserva
+        FROM assentos_reservados ar
+        JOIN assento a ON a.id_assento = ar.id_assento
+        JOIN reserva r ON r.id_reserva = ar.id_reserva
+        WHERE r.id_sessao = ?
+    """
 
-    # Excluir a reserva
-    cur.execute("DELETE FROM RESERVA WHERE ID_RESERVA = ?", (id,))
+    cur.execute(query, (id_sessao,))
+    assentos = cur.fetchall()
+    cur.close()
+
+    lista_reservados = []
+    for assento in assentos:
+        lista_reservados.append({
+            'id_assento': assento[0],
+            'id_sala': assento[1],
+            'fileira': assento[2],
+            'numero': assento[3],
+            'id_sessao': assento[4],
+            'id_reserva': assento[5]
+        })
+
+    return jsonify({
+        'mensagem': f'Assentos reservados para a sessão {id_sessao}',
+        'assentos': lista_reservados
+    }), 200
+
+@app.route('/salas', methods=['POST'])
+def cadastro_salas():
+    data = request.get_json()
+    id_sala = data.get('id_sala')
+    capacidade = data.get('capacidade')
+    descricao = data.get('descricao')
+
+    if not all([id_sala, capacidade, descricao]):
+        return jsonify({"error": "id_sala, descricao e capacidade são obrigatórios"}), 400
+
+    cur = con.cursor()
+
+    # Verifica se a sala já existe
+    cur.execute("SELECT 1 FROM SALAS WHERE ID_SALAS = ?", (id_sala,))
+    if cur.fetchone():
+        return jsonify({"error": "Esta sala já foi cadastrada!"}), 400
+
+    # Insere a nova sala
+    cur.execute("INSERT INTO SALAS (ID_SALAS, CAPACIDADE, DESCRICAO) VALUES (?, ?, ?)",
+                (id_sala, capacidade, descricao))
+
     con.commit()
     cur.close()
 
     return jsonify({
-        'message': "Reserva excluída com sucesso!",
-        'id_reserva': id
-    })
-
-
-
-
-
+        'message': "Sala cadastrada com sucesso!",
+        'sala': {
+            'id_sala': id_sala,
+            'capacidade': capacidade,
+            'descricao': descricao,
+        }
+    }), 200
