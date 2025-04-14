@@ -4,22 +4,18 @@ from main import app, con
 import re
 import jwt
 from fpdf import FPDF
-import os
 from flask_bcrypt import generate_password_hash, check_password_hash
 import unicodedata
 import smtplib
 from threading import Thread
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
-
-
-
-
+import os
+import qrcode
+from qrcode.constants import ERROR_CORRECT_H
+import crcmod
 
 app = Flask(__name__)
-
-
-
 
 CORS(app, origins=["*"])
 
@@ -29,75 +25,38 @@ senha_secreta = app.config['SECRET_KEY']
 if not os.path.exists(app.config['UPLOAD_FILMES']):
     os.makedirs(app.config['UPLOAD_FILMES'])
 
-
-#
-# def enviar_email_para(destinatario, texto):
-#     """
-#     Função para enviar e-mail com debug.
-#     """
-#     try:
-#         print("Montando e-mail...")
-#         msg = MIMEText(texto, 'plain')
-#         msg['Subject'] = 'Mensagem automática'
-#         msg['From'] = EMAIL_ORIGEM
-#         msg['To'] = destinatario
-#
-#
-#
-#
-#         print("Conectando ao servidor SMTP...")
-#         servidor = smtplib.SMTP(SMTP_SERVER, SMTP_PORT, timeout=10)
-#         print('depois que conecteio')
-#         servidor.ehlo()
-#         servidor.starttls()
-#         print('antes da senha')
-#         servidor.login(EMAIL_ORIGEM, SENHA)
-#         print('depois da senha')
-#         servidor.send_message(msg)
-#         print('sendmenssaregefd')
-#         servidor.quit()
-#         print("E-mail enviado com sucesso.")
-#     except Exception as e:
-#         print("Erro ao enviar e-mail:", e)
-#         raise  # Repassa o erro para a função principal poder lidar
-#
-
-
 def normalizar_texto(texto):
     if texto:
         return unicodedata.normalize('NFC', texto)
     return texto
 
-def enviar_email_para(email_destinatario, texto):
-    def task_envio():
-        servidor_smtp = 'smtp.gmail.com'
-        porta_smtp = 587
-        remetente = 'primecine00@gmail.com'
-        senha = 'zzzj kwhn mnhb vtrx'  # Use senha de app do Gmail
+def enviar_email_para(destinatario, corpo, caminho_anexo=None):
+    from email.mime.multipart import MIMEMultipart
+    from email.mime.text import MIMEText
+    from email.mime.base import MIMEBase
+    from email import encoders
+    import smtplib
+    import os  # garante que os.path.basename funcione mesmo fora do escopo
 
-        assunto = 'assunto'
-        corpo = texto  # Você já está passando o texto como argumento
+    msg = MIMEMultipart()
+    msg['From'] = 'primecine00@gmail.com'
+    msg['To'] = destinatario
+    msg['Subject'] = 'Confirmação de Reserva - PrimeCine'
 
-        # Agora usamos MIMEMultipart corretamente
-        msg = MIMEMultipart()
-        msg['From'] = remetente
-        msg['To'] = email_destinatario
-        msg['Subject'] = assunto
+    msg.attach(MIMEText(corpo, 'plain'))
 
-        # Anexando o corpo como plain text
-        msg.attach(MIMEText(corpo, 'plain'))
+    if caminho_anexo:
+        with open(caminho_anexo, 'rb') as f:
+            parte = MIMEBase('application', 'octet-stream')
+            parte.set_payload(f.read())
+            encoders.encode_base64(parte)
+            parte.add_header('Content-Disposition', f'attachment; filename={os.path.basename(caminho_anexo)}')
+            msg.attach(parte)
 
-        try:
-            server = smtplib.SMTP(servidor_smtp, porta_smtp, timeout=10)
-            server.starttls()
-            server.login(remetente, senha)
-            server.sendmail(remetente, email_destinatario, msg.as_string())
-            server.quit()
-            print(f"E-mail enviado para {email_destinatario}")
-        except Exception as e:
-            print(f"Erro ao enviar e-mail: {e}")
-
-    Thread(target=task_envio, daemon=True).start()
+    servidor = smtplib.SMTP('smtp.gmail.com', 587)
+    servidor.starttls()
+    servidor.login('primecine00@gmail.com', 'zzzj kwhn mnhb vtrx')  # senha de app
+    servidor.send_message(msg)
 
 def remover_bearer(token):  # Remove o bearer
     if token.startswith('Bearer '):
@@ -438,7 +397,7 @@ def filme_imagem():
 @app.route('/filmes', methods=['GET'])
 def listar_filmes():
     cur = con.cursor()
-    cur.execute("SELECT id_filme, titulo, classificacao, genero, sinopse FROM filmes")
+    cur.execute("SELECT id_filme, titulo, classificacao, genero, sinopse FROM filmes WHERE SITUACAO = 1")
     filmes = cur.fetchall()
 
     filmes_lista = []  # Cria uma lista vazia para armazenar os filmes
@@ -463,7 +422,7 @@ def listar_filmes():
 @app.route('/filme_imagem/<int:id>', methods=['PUT'])
 def atualizar_filme(id):
     cur = con.cursor()
-    cur.execute("SELECT id_filme, titulo, genero, classificacao, sinopse FROM FILMES WHERE id_filme =?", (id,))
+    cur.execute("SELECT id_filme, titulo, genero, classificacao, sinopse, situacao FROM FILMES WHERE id_filme =?", (id,))
     filme_data = cur.fetchone()
 
     if not filme_data:  # Se não existir, vai retornar um erro
@@ -471,13 +430,18 @@ def atualizar_filme(id):
         return jsonify({"error": "Filme não foi encontrado"}), 404
 
     titulo_armazenado = filme_data[1]  # Armazena o título do filme
+    situacao_armazenada = filme_data[5]
 
     # Captura os dados do formulário e normaliza
     titulo = normalizar_texto(request.form.get('titulo'))
     classificacao = normalizar_texto(request.form.get('classificacao'))
     genero = normalizar_texto(request.form.get('genero'))
     sinopse = normalizar_texto(request.form.get('sinopse'))
+    situacao = normalizar_texto(request.form.get('situacao'))
     imagem = request.files.get('imagem')  # Arquivo enviado
+
+    if not situacao:
+        situacao = situacao_armazenada
 
     if titulo_armazenado != titulo:  # Verifica se o título foi modificado
         cur.execute("SELECT 1 FROM filmes WHERE titulo = ?", (titulo,))
@@ -486,8 +450,8 @@ def atualizar_filme(id):
             return jsonify({"message": "Este filme já foi cadastrado!"}), 400
 
     cur.execute(
-        "UPDATE filmes SET titulo = ?, genero = ?, classificacao = ?, sinopse = ? WHERE id_filme = ?",
-        (titulo, genero, classificacao, sinopse, id)
+        "UPDATE filmes SET titulo = ?, genero = ?, classificacao = ?, sinopse = ?, situacao = ? WHERE id_filme = ?",
+        (titulo, genero, classificacao, sinopse, situacao, id)
     )
 
     con.commit()
@@ -508,37 +472,63 @@ def atualizar_filme(id):
             'genero': genero,
             'classificacao': classificacao,
             'sinopse': sinopse,
+            'situacao': situacao,
             'imagem_path': imagem_path
         }
     })
 
-@app.route('/filmes/<int:id_filme>/inativar', methods=['PUT'])
-def inativar_filme(id_filme):
-    cur = con.cursor()
-    cur.execute("SELECT 1 FROM FILMES WHERE ID_FILME = ?", (id_filme,))
-    if not cur.fetchone():
-        return jsonify({'error': 'Filme não encontrado'}), 404
-
-    cur.execute("UPDATE FILMES SET ATIVO = 0 WHERE ID_FILME = ?", (id_filme,))
-    con.commit()
-    cur.close()
-
-    return jsonify({'mensagem': 'Filme inativado com sucesso!'}), 200
+# @app.route('/filmes/<int:id_filme>/inativar', methods=['PUT'])
+# def inativar_filme(id_filme):
+#     token = request.headers.get('Authorization')
+#     if not token:
+#         return jsonify({'mensagem': 'Token de autenticação necessário'}), 401
+#
+#     token = remover_bearer(token)
+#     try:
+#         payload = jwt.decode(token, senha_secreta, algorithms=['HS256'])
+#         role = payload.get('role')
+#     except jwt.ExpiredSignatureError:
+#         return jsonify({'mensagem': 'Token expirado'}), 401
+#     except jwt.InvalidTokenError:
+#         return jsonify({'mensagem': 'Token inválido'}), 401
+#
+#     if role != 'admin':
+#         return jsonify({'mensagem': 'Apenas administradores podem inativar filmes.'}), 403
+#
+#     cur = con.cursor()
+#     cur.execute("SELECT 1 FROM FILMES WHERE ID_FILME = ?", (id_filme,))
+#     if not cur.fetchone():
+#         cur.close()
+#         return jsonify({'error': 'Filme não encontrado'}), 404
+#
+#     cur.execute("UPDATE FILMES SET ATIVO = 0 WHERE ID_FILME = ?", (id_filme,))
+#     con.commit()
+#     cur.close()
+#
+#     return jsonify({'mensagem': 'Filme inativado com sucesso!'}), 200
+#
 
 
 @app.route('/sessoes', methods=['POST'])
 def cadastrar_sessao():
     data = request.get_json()
     id_sala = data.get('id_sala')
-    horario = data.get('horario')
-    data_sessao = data.get('data_sessao')
+    horario = data.get('horario')  # esperado: HH:MM
+    data_sessao = data.get('data_sessao')  # esperado: AAAA-MM-DD
     id_filme = data.get('id_filme')
 
     if not all([id_sala, horario, data_sessao, id_filme]):
         return jsonify({"error": "Todos os campos são obrigatórios"}), 400
 
+    # Verifica se a data e o horário não são retroativos
+    try:
+        data_hora_sessao = datetime.strptime(f"{data_sessao} {horario}", "%Y-%m-%d %H:%M")
+        if data_hora_sessao <= datetime.now():
+            return jsonify({"error": "A data e o horário da sessão está inválido"}), 400
+    except ValueError:
+        return jsonify({"error": "Formato inválido de data ou horário."}), 400
+
     cur = con.cursor()
-    # Verifica se o filme e a sala existem antes de inserir a sessão
     cur.execute("SELECT 1 FROM filmes WHERE id_filme = ?", (id_filme,))
     if not cur.fetchone():
         return jsonify({"error": "Filme não encontrado"}), 404
@@ -547,7 +537,6 @@ def cadastrar_sessao():
     if not cur.fetchone():
         return jsonify({"error": "Sala não encontrada"}), 404
 
-    # Insere a nova sessão
     cur.execute("INSERT INTO sessoes (id_sala, horario, data_sessao, id_filme) VALUES (?, ?, ?, ?)",
                 (id_sala, horario, data_sessao, id_filme))
 
@@ -556,28 +545,41 @@ def cadastrar_sessao():
 
     return jsonify({"message": "Sessão adicionada com sucesso!"}), 201
 
-
 @app.route('/sessoes/<int:id_filme>', methods=['GET'])
 def listar_sessoes(id_filme):
     cur = con.cursor()
-    cur.execute("""SELECT s.id_sessao, s.id_sala, sa.descricao, s.horario, s.data_sessao, s.id_filme, f.titulo
-    FROM sessoes s 
-    LEFT JOIN FILMES f ON f.id_filme = s.id_filme
-    LEFT JOIN salas sa ON sa.id_salas = s.id_sala WHERE s.id_filme = ?""", (id_filme,))
+    cur.execute("""
+        SELECT s.id_sessao, s.id_sala, sa.descricao, s.horario, s.data_sessao, s.id_filme, f.titulo
+        FROM sessoes s 
+        LEFT JOIN filmes f ON f.id_filme = s.id_filme
+        LEFT JOIN salas sa ON sa.id_salas = s.id_sala
+        WHERE s.id_filme = ?
+    """, (id_filme,))
+
     sessoes = cur.fetchall()
     sessoes_dic = []
 
     for sessao in sessoes:
+        horario = sessao[3]
+        data_sessao = sessao[4]
+
+        # Junta data + hora e compara com o agora
+        if data_sessao and horario:
+            data_hora_sessao = datetime.combine(data_sessao, horario)
+            if data_hora_sessao <= datetime.now():
+                continue  # pula sessões passadas
+
         sessoes_dic.append({
             'id_sessao': sessao[0],
             'id_sala': sessao[1],
             'descricao': sessao[2],
-            'horario': sessao[3].strftime("%H:%M:%S"),  # transforma em string
-            'data_sessao': sessao[4].strftime("%Y-%m-%d"),  # idem
+            'horario': horario.strftime("%H:%M:%S"),
+            'data_sessao': data_sessao.strftime("%Y-%m-%d"),
             'id_filme': sessao[5],
-            'titulo':sessao[6]
+            'titulo': sessao[6]
         })
-    return jsonify({"mensagem": "Lista de sessoes", "sessoes": sessoes_dic})
+
+    return jsonify({"mensagem": "Lista de sessões", "sessoes": sessoes_dic})
 
 
 @app.route('/sessoes/<int:id>', methods=['PUT'])
@@ -636,6 +638,7 @@ def deletar_sessao(id):
         'message': "Sessão excluída com sucesso!",
         'id_sessao': id
     })
+
 @app.route('/reservas', methods=['POST'])
 def fazer_reserva():
     # Autenticação via token
@@ -713,6 +716,49 @@ def fazer_reserva():
     con.commit()
     cur.close()
 
+    # 1. Valor total da reserva
+    valor = len(id_assentos) * 10.00  # R$10 por assento (ou ajuste conforme o valor real)
+
+    # 2. Buscar dados da chave PIX
+    cursor = con.cursor()
+    cursor.execute("SELECT RAZAO_SOCIAL, CHAVE_PIX, CIDADE FROM CONFIG_CINE")
+    res = cursor.fetchone()
+    cursor.close()
+
+    razao_social, chave_pix, cidade = res
+    razao_social = razao_social[:25]
+    cidade = cidade[:15]
+
+    # 3. Gerar código PIX
+    merchant_info = format_tlv("00", "br.gov.bcb.pix") + format_tlv("01", chave_pix)
+    campo_26 = format_tlv("26", merchant_info)
+
+    payload_sem_crc = (
+        "000201"
+        "010212"
+        f"{campo_26}"
+        "52040000"
+        "5303986"
+        f"{format_tlv('54', f'{valor:.2f}')}"
+        "5802BR"
+        f"{format_tlv('59', razao_social)}"
+        f"{format_tlv('60', cidade)}"
+        f"{format_tlv('62', format_tlv('05', '***'))}"
+        "6304"
+    )
+
+    crc = calcula_crc16(payload_sem_crc)
+    codigo_pix = payload_sem_crc + crc
+
+    # Gerar o QR Code
+    qr = qrcode.make(codigo_pix)
+    nome_arquivo_qr = f"pix_reserva_{id_reserva}.png"
+    caminho_qr = os.path.join(os.getcwd(), "upload", "qrcodes")
+    os.makedirs(caminho_qr, exist_ok=True)
+    caminho_qr_completo = os.path.join(caminho_qr, nome_arquivo_qr)
+    qr.save(caminho_qr_completo)
+
+    #EMAIL
     # Busca nome do usuário
     cursor = con.cursor()
     cursor.execute("SELECT nome FROM CADASTROS WHERE ID_CADASTRO = ?", (id_cadastro,))
@@ -741,6 +787,14 @@ Sua reserva foi realizada com sucesso. Aqui estão os detalhes da sua sessão:
 📅 Data: {data_sessao}
 ⏰ Horário: {horario}
 💺 Assentos: {', '.join(map(str, id_assentos))}
+💰 Valor total: R$ {valor:.2f}
+
+Para efetuar o pagamento via PIX, copie o código abaixo e cole no app do seu banco:
+
+🔢 Código PIX:
+{codigo_pix}
+
+Ou, se preferir, escaneie o QR Code em anexo! 📲
 
 Estamos ansiosos para te receber na sessão! Prepare a pipoca! 🍿✨
 
@@ -751,7 +805,7 @@ Equipe PrimeCine
     mensagem = "Reserva realizada com sucesso!"
     erro_email = None
     try:
-        enviar_email_para(email, texto)
+        enviar_email_para(email, texto, caminho_qr_completo)
     except Exception as e:
         mensagem = "Reserva feita com sucesso, mas falha ao enviar e-mail."
         erro_email = str(e)
@@ -808,23 +862,17 @@ def listar_assentos(id_sessao):
 @app.route('/salas', methods=['POST'])
 def cadastro_salas():
     data = request.get_json()
-    id_sala = data.get('id_sala')
     capacidade = data.get('capacidade')
     descricao = data.get('descricao')
 
-    if not all([id_sala, capacidade, descricao]):
-        return jsonify({"error": "id_sala, descricao e capacidade são obrigatórios"}), 400
+    if not all([capacidade, descricao]):
+        return jsonify({"error": "descricao e capacidade são obrigatórios"}), 400
 
     cur = con.cursor()
 
-    # Verifica se a sala já existe
-    cur.execute("SELECT 1 FROM SALAS WHERE ID_SALAS = ?", (id_sala,))
-    if cur.fetchone():
-        return jsonify({"error": "Esta sala já foi cadastrada!"}), 400
-
     # Insere a nova sala
-    cur.execute("INSERT INTO SALAS (ID_SALAS, CAPACIDADE, DESCRICAO) VALUES (?, ?, ?)",
-                (id_sala, capacidade, descricao))
+    cur.execute("INSERT INTO SALAS (CAPACIDADE, DESCRICAO) VALUES ( ?, ?)",
+                (capacidade, descricao))
 
     con.commit()
     cur.close()
@@ -832,8 +880,99 @@ def cadastro_salas():
     return jsonify({
         'message': "Sala cadastrada com sucesso!",
         'sala': {
-            'id_sala': id_sala,
             'capacidade': capacidade,
             'descricao': descricao,
         }
     }), 200
+
+
+def calcula_crc16(payload):
+    crc16 = crcmod.mkCrcFun(0x11021, initCrc=0xFFFF, rev=False)
+    crc = crc16(payload.encode('utf-8'))
+    return f"{crc:04X}"
+
+def format_tlv(id, value):
+    return f"{id}{len(value):02d}{value}"
+
+
+@app.route('/gerar_pix', methods=['POST'])
+def gerar_pix():
+    try:
+        data = request.get_json()
+        if not data or 'valor' not in data:
+            return jsonify({"erro": "O valor do PIX é obrigatório."}), 400
+
+        valor = f"{float(data['valor']):.2f}"
+
+        cursor = con.cursor()
+        cursor.execute("SELECT cg.RAZAO_SOCIAL, cg.CHAVE_PIX, cg.CIDADE FROM CONFIG_CINE cg")
+        resultado = cursor.fetchone()
+        cursor.close()
+
+        if not resultado:
+            return jsonify({"erro": "Chave PIX não encontrada"}), 404
+
+        nome, chave_pix, cidade = resultado
+        nome = nome[:25] if nome else "Recebedor PIX"
+        cidade = cidade[:15] if cidade else "Cidade"
+
+        # Monta o campo 26 (Merchant Account Information) com TLVs internos
+        merchant_account_info = (
+                format_tlv("00", "br.gov.bcb.pix") +
+                format_tlv("01", chave_pix)
+        )
+        campo_26 = format_tlv("26", merchant_account_info)
+
+        payload_sem_crc = (
+                "000201" +  # Payload Format Indicator
+                "010212" +  # Point of Initiation Method
+                campo_26 +  # Merchant Account Information
+                "52040000" +  # Merchant Category Code
+                "5303986" +  # Currency - 986 = BRL
+                format_tlv("54", valor) +  # Transaction amount
+                "5802BR" +  # Country Code
+                format_tlv("59", nome) +  # Merchant Name
+                format_tlv("60", cidade) +  # Merchant City
+                format_tlv("62", format_tlv("05", "***")) +  # Additional data (TXID)
+                "6304"  # CRC placeholder
+        )
+
+        crc = calcula_crc16(payload_sem_crc)
+        payload_completo = payload_sem_crc + crc
+
+        # Criação do QR Code com configurações aprimoradas
+        qr_obj = qrcode.QRCode(
+            version=None,  # Permite ajuste automático da versão
+            error_correction=ERROR_CORRECT_H,  # Alta correção de erros (30%)
+            box_size=10,
+            border=4
+        )
+        qr_obj.add_data(payload_completo)
+        qr_obj.make(fit=True)
+        qr = qr_obj.make_image(fill_color="black", back_color="white")
+
+        # Cria a pasta 'upload/qrcodes' relativa ao diretório do projeto
+        pasta_qrcodes = os.path.join(os.getcwd(), "upload", "qrcodes")
+        os.makedirs(pasta_qrcodes, exist_ok=True)
+
+        # Conta quantos arquivos já existem com padrão 'pix_*.png'
+        arquivos_existentes = [f for f in os.listdir(pasta_qrcodes) if f.startswith("pix_") and f.endswith(".png")]
+        numeros_usados = []
+        for nome_arq in arquivos_existentes:
+            try:
+                num = int(nome_arq.replace("pix_", "").replace(".png", ""))
+                numeros_usados.append(num)
+            except ValueError:
+                continue
+        proximo_numero = max(numeros_usados, default=0) + 1
+        nome_arquivo = f"pix_{proximo_numero}.png"
+        caminho_arquivo = os.path.join(pasta_qrcodes, nome_arquivo)
+
+        # Salva o QR Code no disco
+        qr.save(caminho_arquivo)
+
+        print(payload_completo)
+
+        return send_file(caminho_arquivo, mimetype='image/png', as_attachment=True, download_name=nome_arquivo)
+    except Exception as e:
+        return jsonify({"erro": f"Ocorreu um erro internosse: {str(e)}"}), 500
