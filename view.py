@@ -7,6 +7,7 @@ from fpdf import FPDF
 from flask_bcrypt import generate_password_hash, check_password_hash
 import unicodedata
 from datetime import datetime, time
+from datetime import timedelta
 import qrcode
 from qrcode.constants import ERROR_CORRECT_H
 import crcmod
@@ -356,7 +357,7 @@ def logout():
 
 
 @app.route('/filme_imagem', methods=['POST'])
-def filme_imagem():
+def cadastar_filme_imagem():
     token = request.headers.get('Authorization')  # Verifica token
 
     if not token:  # Se não tiver token
@@ -376,6 +377,7 @@ def filme_imagem():
     genero = request.form.get('genero')
     sinopse = request.form.get('sinopse')
     imagem = request.files.get('imagem')  # Arquivo enviado
+    duracao = request.form.get('duracao')
 
     cursor = con.cursor()
     # Verifica se o filme já existe
@@ -386,8 +388,8 @@ def filme_imagem():
 
     # Insere o novo filme e retorna o ID gerado
     cursor.execute(
-        "INSERT INTO filmes (TITULO, CLASSIFICACAO, GENERO, SINOPSE) VALUES (?, ?, ?, ?) RETURNING ID_filme",
-        (titulo, classificacao, genero, sinopse)
+        "INSERT INTO filmes (TITULO, CLASSIFICACAO, GENERO, SINOPSE, DURACAO) VALUES (?, ?, ?, ?, ?) RETURNING ID_filme",
+        (titulo, classificacao, genero, sinopse, duracao)
     )
     filme_id = cursor.fetchone()[0]
     con.commit()
@@ -409,7 +411,8 @@ def filme_imagem():
             'classificacao': classificacao,
             'genero': genero,
             'sinopse': sinopse,
-            'imagem_path': imagem_path
+            'imagem_path': imagem_path,
+            'duracao': duracao
         }
     }), 201
 
@@ -496,6 +499,7 @@ def atualizar_filme(id):
         }
     })
 
+
 @app.route('/sessoes', methods=['POST'])
 def cadastrar_sessao():
     data = request.get_json()
@@ -503,8 +507,9 @@ def cadastrar_sessao():
     horario = data.get('horario')  # esperado: HH:MM
     data_sessao = data.get('data_sessao')  # esperado: AAAA-MM-DD
     id_filme = data.get('id_filme')
+    valor_unitario = data.get('valor_unitario')
 
-    if not all([id_sala, horario, data_sessao, id_filme]):
+    if not all([id_sala, horario, data_sessao, id_filme, valor_unitario]):
         return jsonify({"error": "Todos os campos são obrigatórios"}), 400
 
     # Verifica se a data e o horário não são retroativos
@@ -517,11 +522,15 @@ def cadastrar_sessao():
 
     cur = con.cursor()
 
-    # Verifica se o filme existe
-    cur.execute("SELECT 1 FROM filmes WHERE id_filme = ?", (id_filme,))
-    if not cur.fetchone():
+    # Verifica se o filme existe e pega a duração
+    cur.execute("SELECT duracao FROM filmes WHERE id_filme = ?", (id_filme,))
+    resultado = cur.fetchone()
+    if not resultado:
         cur.close()
         return jsonify({"error": "Filme não encontrado"}), 404
+
+    duracao = resultado[0]  # Duração do filme em minutos
+    fim_sessao = data_hora_sessao + timedelta(minutes=duracao)
 
     # Verifica se a sala existe
     cur.execute("SELECT 1 FROM salas WHERE id_salas = ?", (id_sala,))
@@ -529,18 +538,24 @@ def cadastrar_sessao():
         cur.close()
         return jsonify({"error": "Sala não encontrada"}), 404
 
-    # Verifica se já existe uma sessão na mesma sala, data e horário
+    # Verifica se já existe uma sessão em conflito na mesma sala, data e horário
     cur.execute("""
-        SELECT 1 FROM sessoes 
-        WHERE id_sala = ? AND data_sessao = ? AND horario = ?
-    """, (id_sala, data_sessao, horario))
+        SELECT id_sessao, data_sessao, horario
+        FROM sessoes
+        WHERE id_sala = ? AND data_sessao = ?
+        AND (
+            (data_sessao = ? AND horario BETWEEN ? AND ?) OR -- A nova sessão começa durante a sessão existente
+            (data_sessao = ? AND ? BETWEEN horario AND ?)   -- A nova sessão termina durante a sessão existente
+        )
+    """, (id_sala, data_sessao, data_sessao, data_hora_sessao.time(), fim_sessao.time(), data_sessao, data_hora_sessao.time(), fim_sessao.time()))
+
     if cur.fetchone():
         cur.close()
-        return jsonify({"error": "Já existe uma sessão nessa sala, data e horário"}), 409
+        return jsonify({"error": "Sala indisponível, já existe uma sessão nesse horário!"}), 409
 
     # Insere a nova sessão
-    cur.execute("INSERT INTO sessoes (id_sala, horario, data_sessao, id_filme) VALUES (?, ?, ?, ?)",
-                (id_sala, horario, data_sessao, id_filme))
+    cur.execute("INSERT INTO sessoes (id_sala, horario, data_sessao, id_filme, valor_unitario) VALUES (?, ?, ?, ?, ?)",
+                (id_sala, horario, data_sessao, id_filme, valor_unitario))
 
     con.commit()
     cur.close()
@@ -716,12 +731,29 @@ def fazer_reserva():
         """, (id_reserva, assento))
 
     con.commit()
+
+    # 1. Buscar o valor unitário da sessão
+    cur.execute("SELECT valor_unitario FROM sessoes WHERE id_sessao = ?", (id_sessao,))
+    resultado = cur.fetchone()
     cur.close()
 
-    # 1. Valor total da reserva
-    valor = len(id_assentos) * 10.00  # R$10 por assento (ou ajuste conforme o valor real)
+    if not resultado:
+        return jsonify({"error": "Sessão não encontrada para cálculo de valor"}), 404
 
-    # 2. Buscar dados da chave PIX
+    valor_unitario = resultado[0]
+
+
+    # 2. Calcular o valor total da reserva
+    valor_total = len(id_assentos) * float(valor_unitario)
+
+    cursor = con.cursor()
+    cursor.execute("update reserva set valor_total = ? where id_reserva = ?",(valor_total, id_reserva))
+    con.commit()
+    cursor.close()
+
+
+
+    # 3. Buscar dados da chave PIX
     cursor = con.cursor()
     cursor.execute("SELECT RAZAO_SOCIAL, CHAVE_PIX, CIDADE FROM CONFIG_CINE")
     res = cursor.fetchone()
@@ -731,7 +763,7 @@ def fazer_reserva():
     razao_social = razao_social[:25]
     cidade = cidade[:15]
 
-    # 3. Gerar código PIX
+    # 4. Gerar código PIX
     merchant_info = format_tlv("00", "br.gov.bcb.pix") + format_tlv("01", chave_pix)
     campo_26 = format_tlv("26", merchant_info)
 
@@ -741,7 +773,7 @@ def fazer_reserva():
         f"{campo_26}"
         "52040000"
         "5303986"
-        f"{format_tlv('54', f'{valor:.2f}')}"
+        f"{format_tlv('54', f'{valor_total:.2f}')}"
         "5802BR"
         f"{format_tlv('59', razao_social)}"
         f"{format_tlv('60', cidade)}"
@@ -760,14 +792,13 @@ def fazer_reserva():
     caminho_qr_completo = os.path.join(caminho_qr, nome_arquivo_qr)
     qr.save(caminho_qr_completo)
 
-    #EMAIL
-    # Busca nome do usuário
+    # EMAIL
     cursor = con.cursor()
     cursor.execute("SELECT nome FROM CADASTROS WHERE ID_CADASTRO = ?", (id_cadastro,))
     nome_usuario = cursor.fetchone()[0]
     cursor.close()
 
-    # Busca detalhes da sessão
+    # Detalhes da sessão
     cursor = con.cursor()
     cursor.execute("""
         SELECT f.titulo, sa.descricao, s.data_sessao, s.horario
@@ -789,7 +820,7 @@ Sua reserva foi realizada com sucesso. Aqui estão os detalhes da sua sessão:
 📅 Data: {data_sessao}
 ⏰ Horário: {horario}
 💺 Assentos: {', '.join(map(str, id_assentos))}
-💰 Valor total: R$ {valor:.2f}
+💰 Valor total: R$ {valor_total:.2f}
 
 Para efetuar o pagamento via PIX, copie o código abaixo e cole no app do seu banco:
 
@@ -822,7 +853,6 @@ Equipe PrimeCine
         },
         'erro_email': erro_email
     }), 200
-
 
 @app.route('/reservas', methods=['GET'])
 def listar_reservas():
