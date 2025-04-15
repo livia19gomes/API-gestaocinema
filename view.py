@@ -1,4 +1,4 @@
-from flask import Flask, jsonify, request, send_file
+from flask import Flask, jsonify, request, send_file, render_template
 from flask_cors import CORS
 from main import app, con
 import re
@@ -6,14 +6,17 @@ import jwt
 from fpdf import FPDF
 from flask_bcrypt import generate_password_hash, check_password_hash
 import unicodedata
-import smtplib
-from threading import Thread
-from email.mime.text import MIMEText
-from email.mime.multipart import MIMEMultipart
-import os
+from datetime import datetime, time
 import qrcode
 from qrcode.constants import ERROR_CORRECT_H
 import crcmod
+import smtplib
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
+from email.mime.base import MIMEBase
+from email import encoders
+import os
+
 
 app = Flask(__name__)
 
@@ -31,32 +34,48 @@ def normalizar_texto(texto):
     return texto
 
 def enviar_email_para(destinatario, corpo, caminho_anexo=None):
-    from email.mime.multipart import MIMEMultipart
-    from email.mime.text import MIMEText
-    from email.mime.base import MIMEBase
-    from email import encoders
-    import smtplib
-    import os  # garante que os.path.basename funcione mesmo fora do escopo
+    try:
+        # Criação da mensagem
+        msg = MIMEMultipart()
+        msg['From'] = 'primecine00@gmail.com'
+        msg['To'] = destinatario
+        msg['Subject'] = 'Confirmação de Reserva - PrimeCine'
 
-    msg = MIMEMultipart()
-    msg['From'] = 'primecine00@gmail.com'
-    msg['To'] = destinatario
-    msg['Subject'] = 'Confirmação de Reserva - PrimeCine'
+        # Corpo do e-mail
+        msg.attach(MIMEText(corpo, 'plain'))
 
-    msg.attach(MIMEText(corpo, 'plain'))
+        # Adicionando anexo, se houver
+        if caminho_anexo:
+            with open(caminho_anexo, 'rb') as f:
+                parte = MIMEBase('application', 'octet-stream')
+                parte.set_payload(f.read())
+                encoders.encode_base64(parte)
+                parte.add_header('Content-Disposition', f'attachment; filename={os.path.basename(caminho_anexo)}')
+                msg.attach(parte)
 
-    if caminho_anexo:
-        with open(caminho_anexo, 'rb') as f:
-            parte = MIMEBase('application', 'octet-stream')
-            parte.set_payload(f.read())
-            encoders.encode_base64(parte)
-            parte.add_header('Content-Disposition', f'attachment; filename={os.path.basename(caminho_anexo)}')
-            msg.attach(parte)
+        # Conexão segura via SSL com o servidor SMTP
+        servidor = smtplib.SMTP_SSL('smtp.gmail.com', 465)
+        servidor.set_debuglevel(1)  # Habilita o modo de depuração para ver os detalhes da conexão
 
-    servidor = smtplib.SMTP('smtp.gmail.com', 587)
-    servidor.starttls()
-    servidor.login('primecine00@gmail.com', 'zzzj kwhn mnhb vtrx')  # senha de app
-    servidor.send_message(msg)
+        # Login
+        servidor.login('primecine00@gmail.com', 'zzzj kwhn mnhb vtrx')  # Senha de app
+
+        # Envio do e-mail
+        servidor.send_message(msg)
+        print('E-mail enviado com sucesso!')
+
+    except smtplib.SMTPConnectError as e:
+        print(f"Erro ao conectar ao servidor SMTP: {e}")
+    except smtplib.SMTPAuthenticationError as e:
+        print(f"Erro de autenticação SMTP: {e}")
+    except smtplib.SMTPException as e:
+        print(f"Erro ao enviar o e-mail: {e}")
+    finally:
+        try:
+            servidor.quit()  # Fecha a conexão com o servidor SMTP
+        except Exception as e:
+            print(f"Erro ao fechar a conexão com o servidor: {e}")
+
 
 def remover_bearer(token):  # Remove o bearer
     if token.startswith('Bearer '):
@@ -477,37 +496,6 @@ def atualizar_filme(id):
         }
     })
 
-# @app.route('/filmes/<int:id_filme>/inativar', methods=['PUT'])
-# def inativar_filme(id_filme):
-#     token = request.headers.get('Authorization')
-#     if not token:
-#         return jsonify({'mensagem': 'Token de autenticação necessário'}), 401
-#
-#     token = remover_bearer(token)
-#     try:
-#         payload = jwt.decode(token, senha_secreta, algorithms=['HS256'])
-#         role = payload.get('role')
-#     except jwt.ExpiredSignatureError:
-#         return jsonify({'mensagem': 'Token expirado'}), 401
-#     except jwt.InvalidTokenError:
-#         return jsonify({'mensagem': 'Token inválido'}), 401
-#
-#     if role != 'admin':
-#         return jsonify({'mensagem': 'Apenas administradores podem inativar filmes.'}), 403
-#
-#     cur = con.cursor()
-#     cur.execute("SELECT 1 FROM FILMES WHERE ID_FILME = ?", (id_filme,))
-#     if not cur.fetchone():
-#         cur.close()
-#         return jsonify({'error': 'Filme não encontrado'}), 404
-#
-#     cur.execute("UPDATE FILMES SET ATIVO = 0 WHERE ID_FILME = ?", (id_filme,))
-#     con.commit()
-#     cur.close()
-#
-#     return jsonify({'mensagem': 'Filme inativado com sucesso!'}), 200
-#
-
 
 @app.route('/sessoes', methods=['POST'])
 def cadastrar_sessao():
@@ -821,6 +809,46 @@ Equipe PrimeCine
         'erro_email': erro_email
     }), 200
 
+
+@app.route('/reservas', methods=['GET'])
+def listar_reservas():
+    # Consulta ao banco de dados
+    cur = con.cursor()
+
+    # Obter todas as reservas, juntando as tabelas RESERVA, SESSOES e FILMES
+    cur.execute("""
+        SELECT r.ID_RESERVA, f.TITULO, s.DATA_SESSAO, s.HORARIO, sa.DESCRICAO, r.STATUS
+        FROM RESERVA r
+        JOIN SESSOES s ON r.ID_SESSAO = s.ID_SESSAO
+        JOIN FILMES f ON s.ID_FILME = f.ID_FILME
+        JOIN SALAS sa ON s.ID_SALA = sa.ID_SALAS
+    """)
+
+    reservas = cur.fetchall()
+    cur.close()
+
+    # Formatar as reservas para um formato mais legível
+    reservas_formatadas = []
+    for reserva in reservas:
+        id_reserva, titulo_filme, data_sessao, horario, sala, status = reserva
+
+        # Convertendo o horário para string, caso seja do tipo time
+        if isinstance(horario, time):
+            horario = horario.strftime('%H:%M:%S')
+
+        reservas_formatadas.append({
+            "id_reserva": id_reserva,
+            "titulo_filme": titulo_filme,
+            "data_sessao": data_sessao,
+            "horario": horario,
+            "sala": sala,
+            "status": status
+        })
+
+    # Retorna os dados como JSON
+    return jsonify(reservas=reservas_formatadas)
+
+
 @app.route('/assentos_reservados/<int:id_sessao>', methods=['GET'])
 def listar_assentos(id_sessao):
     cur = con.cursor()
@@ -885,6 +913,37 @@ def cadastro_salas():
         }
     }), 200
 
+import jwt
+
+@app.route('/filmes/<int:id_filme>/inativar', methods=['PUT'])
+def inativar_filme(id_filme):
+    token = request.headers.get('Authorization')
+    if not token:
+        return jsonify({'mensagem': 'Token de autenticação necessário'}), 401
+
+    token = remover_bearer(token)
+    try:
+        payload = jwt.decode(token, senha_secreta, algorithms=['HS256'])
+        role = payload.get('role')
+    except jwt.ExpiredSignatureError:
+        return jsonify({'mensagem': 'Token expirado'}), 401
+    except jwt.InvalidTokenError:
+        return jsonify({'mensagem': 'Token inválido'}), 401
+
+    if role != 'adm':
+        return jsonify({'mensagem': 'Apenas administradores podem inativar filmes.'}), 403
+
+    cur = con.cursor()
+    cur.execute("SELECT 1 FROM FILMES WHERE ID_FILME = ?", (id_filme,))
+    if not cur.fetchone():
+        cur.close()
+        return jsonify({'error': 'Filme não encontrado'}), 404
+
+    cur.execute("UPDATE FILMES SET situacao = 0 WHERE ID_FILME = ?", (id_filme,))
+    con.commit()
+    cur.close()
+
+    return jsonify({'mensagem': 'Filme inativado com sucesso!'}), 200
 
 def calcula_crc16(payload):
     crc16 = crcmod.mkCrcFun(0x11021, initCrc=0xFFFF, rev=False)
