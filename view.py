@@ -496,7 +496,6 @@ def atualizar_filme(id):
         }
     })
 
-
 @app.route('/sessoes', methods=['POST'])
 def cadastrar_sessao():
     data = request.get_json()
@@ -512,19 +511,34 @@ def cadastrar_sessao():
     try:
         data_hora_sessao = datetime.strptime(f"{data_sessao} {horario}", "%Y-%m-%d %H:%M")
         if data_hora_sessao <= datetime.now():
-            return jsonify({"error": "A data e o horário da sessão está inválido"}), 400
+            return jsonify({"error": "A data e o horário da sessão estão inválidos"}), 400
     except ValueError:
         return jsonify({"error": "Formato inválido de data ou horário."}), 400
 
     cur = con.cursor()
+
+    # Verifica se o filme existe
     cur.execute("SELECT 1 FROM filmes WHERE id_filme = ?", (id_filme,))
     if not cur.fetchone():
+        cur.close()
         return jsonify({"error": "Filme não encontrado"}), 404
 
+    # Verifica se a sala existe
     cur.execute("SELECT 1 FROM salas WHERE id_salas = ?", (id_sala,))
     if not cur.fetchone():
+        cur.close()
         return jsonify({"error": "Sala não encontrada"}), 404
 
+    # Verifica se já existe uma sessão na mesma sala, data e horário
+    cur.execute("""
+        SELECT 1 FROM sessoes 
+        WHERE id_sala = ? AND data_sessao = ? AND horario = ?
+    """, (id_sala, data_sessao, horario))
+    if cur.fetchone():
+        cur.close()
+        return jsonify({"error": "Já existe uma sessão nessa sala, data e horário"}), 409
+
+    # Insere a nova sessão
     cur.execute("INSERT INTO sessoes (id_sala, horario, data_sessao, id_filme) VALUES (?, ?, ?, ?)",
                 (id_sala, horario, data_sessao, id_filme))
 
@@ -913,7 +927,33 @@ def cadastro_salas():
         }
     }), 200
 
-import jwt
+@app.route('/salas', methods=['GET'])
+def listar_salas():
+    cur = con.cursor()
+
+    # Consulta para listar todas as salas
+    cur.execute("SELECT * FROM SALAS")
+    salas = cur.fetchall()
+    cur.close()
+
+    # Se não houver salas cadastradas
+    if not salas:
+        return jsonify({"message": "Nenhuma sala encontrada."}), 404
+
+    # Formata as salas para uma resposta JSON
+    salas_listadas = []
+    for sala in salas:
+        salas_listadas.append({
+            'id_sala': sala[0],
+            'capacidade': sala[1],
+            'descricao': sala[2],
+        })
+
+    return jsonify({
+        'message': "Salas encontradas com sucesso!",
+        'salas': salas_listadas
+    }), 200
+
 
 @app.route('/filmes/<int:id_filme>/inativar', methods=['PUT'])
 def inativar_filme(id_filme):
@@ -922,28 +962,41 @@ def inativar_filme(id_filme):
         return jsonify({'mensagem': 'Token de autenticação necessário'}), 401
 
     token = remover_bearer(token)
+
     try:
         payload = jwt.decode(token, senha_secreta, algorithms=['HS256'])
-        role = payload.get('role')
+        user_type = payload.get('user_type')  # Alterado para user_type
+        print(f"User Type extraído do token: {user_type}")  # Verifique o valor de user_type
     except jwt.ExpiredSignatureError:
         return jsonify({'mensagem': 'Token expirado'}), 401
     except jwt.InvalidTokenError:
         return jsonify({'mensagem': 'Token inválido'}), 401
 
-    if role != 'adm':
+    # Verificar se o usuário é um administrador
+    if not user_type or user_type.lower() != 'adm':
         return jsonify({'mensagem': 'Apenas administradores podem inativar filmes.'}), 403
 
+    # Conectar ao banco de dados
     cur = con.cursor()
-    cur.execute("SELECT 1 FROM FILMES WHERE ID_FILME = ?", (id_filme,))
-    if not cur.fetchone():
+
+    # Verificar se o filme existe no banco de dados
+    cur.execute("SELECT situacao FROM FILMES WHERE ID_FILME = ?", (id_filme,))
+    filme = cur.fetchone()
+
+    if not filme:
         cur.close()
         return jsonify({'error': 'Filme não encontrado'}), 404
 
-    cur.execute("UPDATE FILMES SET situacao = 0 WHERE ID_FILME = ?", (id_filme,))
+    # Atualizar a situação do filme
+    nova_situacao = 0 if filme[0] == 1 else 1  # Alterna entre 0 e 1
+
+    cur.execute("UPDATE FILMES SET situacao = ? WHERE ID_FILME = ?", (nova_situacao, id_filme))
     con.commit()
     cur.close()
 
-    return jsonify({'mensagem': 'Filme inativado com sucesso!'}), 200
+    # Retornar mensagem de sucesso
+    situacao_str = "inativo" if nova_situacao == 0 else "ativo"
+    return jsonify({'mensagem': f'Filme {situacao_str} com sucesso!'}), 200
 
 def calcula_crc16(payload):
     crc16 = crcmod.mkCrcFun(0x11021, initCrc=0xFFFF, rev=False)
