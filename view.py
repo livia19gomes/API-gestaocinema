@@ -18,7 +18,6 @@ from email.mime.base import MIMEBase
 from email import encoders
 import os
 
-
 app = Flask(__name__)
 
 CORS(app, origins=["*"])
@@ -77,7 +76,6 @@ def enviar_email_para(destinatario, corpo, caminho_anexo=None):
         except Exception as e:
             print(f"Erro ao fechar a conexão com o servidor: {e}")
 
-
 def remover_bearer(token):  # Remove o bearer
     if token.startswith('Bearer '):
         return token[len('Bearer '):]
@@ -88,7 +86,6 @@ def generate_token(user_id, email):  # Gera um token para o usuario
     payload = {'id_usuario': user_id, 'email':email}
     token = jwt.encode(payload, senha_secreta, algorithm='HS256')
     return token
-
 
 def validar_senha(senha):
     if len(senha) < 8:
@@ -123,10 +120,6 @@ def usuarios():
             })
 
         return jsonify(mensagem='Lista de usuarios', usuarios=usuarios_dic)
-
-
-
-
 
 @app.route('/cadastros', methods=['POST'])
 def cadastro_usuario():
@@ -165,7 +158,6 @@ def cadastro_usuario():
         }
     }),200
 
-
 @app.route('/cadastros/<int:id>', methods=['DELETE'])
 def deletar_Usuario(id):
     cur = con.cursor()
@@ -183,7 +175,6 @@ def deletar_Usuario(id):
         'message': "Usuario excluído com sucesso!",
         'id_usuario': id
     })
-
 
 @app.route('/relatorio', methods=['GET'])
 def criar_pdf():
@@ -221,7 +212,6 @@ def criar_pdf():
     pdf.output(pdf_path)  # Salva o PDF no caminho especificado
 
     return send_file(pdf_path, as_attachment=True, mimetype='application/pdf')  # Envia o PDF gerado como anexo na resposta HTTP
-
 
 @app.route('/cadastros/<int:id>', methods=['PUT'])
 def atualizar_usuario(id):
@@ -275,7 +265,6 @@ def atualizar_usuario(id):
             'ativo': ativo
         }
     })
-
 
 tentativas = 0
 @app.route('/login', methods=['POST'])
@@ -354,7 +343,6 @@ def logout():
         return jsonify({"error": "Token expirado"}), 401
     except jwt.InvalidTokenError:
         return jsonify({"error": "Token inválido"}), 401
-
 
 @app.route('/filme_imagem', methods=['POST'])
 def cadastar_filme_imagem():
@@ -440,7 +428,6 @@ def listar_filmes():
         'filmes': filmes_lista  # Retorna a lista de filmes na chave 'filmes'
     })
 
-
 @app.route('/filme_imagem/<int:id>', methods=['PUT'])
 def atualizar_filme(id):
     cur = con.cursor()
@@ -498,7 +485,6 @@ def atualizar_filme(id):
             'imagem_path': imagem_path
         }
     })
-
 
 @app.route('/sessoes', methods=['POST'])
 def cadastrar_sessao():
@@ -566,7 +552,15 @@ def cadastrar_sessao():
 def listar_sessoes(id_filme):
     cur = con.cursor()
     cur.execute("""
-        SELECT s.id_sessao, s.id_sala, sa.descricao, s.horario, s.data_sessao, s.id_filme, f.titulo
+        SELECT s.id_sessao, 
+               s.id_sala, 
+               sa.descricao, 
+               s.horario, 
+               s.data_sessao, 
+               s.id_filme, 
+               f.titulo, 
+               s.valor_unitario, 
+               f.duracao
         FROM sessoes s 
         LEFT JOIN filmes f ON f.id_filme = s.id_filme
         LEFT JOIN salas sa ON sa.id_salas = s.id_sala
@@ -580,11 +574,22 @@ def listar_sessoes(id_filme):
         horario = sessao[3]
         data_sessao = sessao[4]
 
-        # Junta data + hora e compara com o agora
-        if data_sessao and horario:
-            data_hora_sessao = datetime.combine(data_sessao, horario)
-            if data_hora_sessao <= datetime.now():
-                continue  # pula sessões passadas
+        # Converte horário e data corretamente
+        if isinstance(horario, str):
+            horario = datetime.strptime(horario, "%H:%M:%S").time()
+        if isinstance(data_sessao, str):
+            data_sessao = datetime.strptime(data_sessao, "%Y-%m-%d").date()
+
+        # Junta data + hora e compara
+        data_hora_sessao = datetime.combine(data_sessao, horario)
+        if data_hora_sessao <= datetime.now():
+            continue  # pula sessões passadas
+
+        valor_unitario = sessao[7]
+        duracao = sessao[8]
+
+        valor_unitario = float(valor_unitario) if valor_unitario is not None else 0.0
+        duracao = int(duracao) if duracao is not None else 0
 
         sessoes_dic.append({
             'id_sessao': sessao[0],
@@ -593,11 +598,17 @@ def listar_sessoes(id_filme):
             'horario': horario.strftime("%H:%M:%S"),
             'data_sessao': data_sessao.strftime("%Y-%m-%d"),
             'id_filme': sessao[5],
-            'titulo': sessao[6]
+            'titulo': sessao[6],
+            'valor_unitario': valor_unitario,
+            'duracao': duracao
         })
 
-    return jsonify({"mensagem": "Lista de sessões", "sessoes": sessoes_dic})
+    cur.close()
 
+    return jsonify({
+        "mensagem": "Lista de sessões",
+        "sessoes": sessoes_dic
+    })
 
 @app.route('/sessoes/<int:id>', methods=['PUT'])
 def editar_sessao(id):
@@ -675,8 +686,9 @@ def fazer_reserva():
 
     # Dados da requisição
     data = request.get_json()
-    id_sessao = data.get('id_sessao')
+    id_sessao = int(data.get('id_sessao'))
     id_assentos = data.get('id_assento')  # deve ser uma lista
+    id_assentos = [int(i) for i in id_assentos]
 
     try:
         id_assentos = list(map(int, id_assentos))
@@ -733,7 +745,7 @@ def fazer_reserva():
     con.commit()
 
     # 1. Buscar o valor unitário da sessão
-    cur.execute("SELECT valor_unitario FROM sessoes WHERE id_sessao = ?", (id_sessao,))
+    cur.execute("SELECT COALESCE(valor_unitario,0) FROM sessoes WHERE id_sessao = ?", (id_sessao,))
     resultado = cur.fetchone()
     cur.close()
 
@@ -741,7 +753,6 @@ def fazer_reserva():
         return jsonify({"error": "Sessão não encontrada para cálculo de valor"}), 404
 
     valor_unitario = resultado[0]
-
 
     # 2. Calcular o valor total da reserva
     valor_total = len(id_assentos) * float(valor_unitario)
@@ -751,22 +762,24 @@ def fazer_reserva():
     con.commit()
     cursor.close()
 
-
-
     # 3. Buscar dados da chave PIX
     cursor = con.cursor()
     cursor.execute("SELECT RAZAO_SOCIAL, CHAVE_PIX, CIDADE FROM CONFIG_CINE")
     res = cursor.fetchone()
     cursor.close()
 
+    # Separa as informações trazidas do banco
     razao_social, chave_pix, cidade = res
     razao_social = razao_social[:25]
     cidade = cidade[:15]
 
     # 4. Gerar código PIX
+
+    # Monta as informações do recebedor
     merchant_info = format_tlv("00", "br.gov.bcb.pix") + format_tlv("01", chave_pix)
     campo_26 = format_tlv("26", merchant_info)
 
+    # Monta o Payload PIX (sem o CRC ainda)
     payload_sem_crc = (
         "000201"
         "010212"
@@ -781,16 +794,18 @@ def fazer_reserva():
         "6304"
     )
 
+    # Calcula o CRC16 do payload (para garantir a validade do QR Code)
     crc = calcula_crc16(payload_sem_crc)
     codigo_pix = payload_sem_crc + crc
 
-    # Gerar o QR Code
+    # Gerar o QR Code imagem
     qr = qrcode.make(codigo_pix)
     nome_arquivo_qr = f"pix_reserva_{id_reserva}.png"
     caminho_qr = os.path.join(os.getcwd(), "upload", "qrcodes")
     os.makedirs(caminho_qr, exist_ok=True)
     caminho_qr_completo = os.path.join(caminho_qr, nome_arquivo_qr)
     qr.save(caminho_qr_completo)
+
 
     # EMAIL
     cursor = con.cursor()
@@ -856,6 +871,22 @@ Equipe PrimeCine
 
 @app.route('/reservas', methods=['GET'])
 def listar_reservas():
+
+ # Autenticação via token
+    token = request.headers.get('Authorization')
+    if not token:
+        return jsonify({'mensagem': 'Token de autenticação necessário'}), 401
+
+    token = remover_bearer(token)
+    try:
+        payload = jwt.decode(token, senha_secreta, algorithms=['HS256'])
+        id_cadastro = payload['id_usuario']
+        email = payload['email']
+    except jwt.ExpiredSignatureError:
+        return jsonify({'mensagem': 'Token expirado'}), 401
+    except jwt.InvalidTokenError:
+        return jsonify({'mensagem': 'Token inválido'}), 401
+
     # Consulta ao banco de dados
     cur = con.cursor()
 
@@ -866,15 +897,23 @@ def listar_reservas():
         JOIN SESSOES s ON r.ID_SESSAO = s.ID_SESSAO
         JOIN FILMES f ON s.ID_FILME = f.ID_FILME
         JOIN SALAS sa ON s.ID_SALA = sa.ID_SALAS
-    """)
+        where r.id_cadastro = ? 
+    """, (id_cadastro, ))
 
     reservas = cur.fetchall()
     cur.close()
 
     # Formatar as reservas para um formato mais legível
     reservas_formatadas = []
+
     for reserva in reservas:
         id_reserva, titulo_filme, data_sessao, horario, sala, status = reserva
+
+    # Buscar os assentos dessa reserva
+        cur.execute("SELECT ID_ASSENTO FROM ASSENTOS_RESERVADOS WHERE ID_RESERVA = ?", (id_reserva,))
+        assentos_raw = cur.fetchall()
+        assentos = [row[0] for row in assentos_raw]
+
 
         # Convertendo o horário para string, caso seja do tipo time
         if isinstance(horario, time):
@@ -886,12 +925,12 @@ def listar_reservas():
             "data_sessao": data_sessao,
             "horario": horario,
             "sala": sala,
-            "status": status
+            "status": status,
+            "assentos":assentos
         })
 
     # Retorna os dados como JSON
     return jsonify(reservas=reservas_formatadas)
-
 
 @app.route('/assentos_reservados/<int:id_sessao>', methods=['GET'])
 def listar_assentos(id_sessao):
@@ -984,7 +1023,6 @@ def listar_salas():
         'salas': salas_listadas
     }), 200
 
-
 @app.route('/filmes/<int:id_filme>/inativar', methods=['PUT'])
 def inativar_filme(id_filme):
     token = request.headers.get('Authorization')
@@ -1035,7 +1073,6 @@ def calcula_crc16(payload):
 
 def format_tlv(id, value):
     return f"{id}{len(value):02d}{value}"
-
 
 @app.route('/gerar_pix', methods=['POST'])
 def gerar_pix():
