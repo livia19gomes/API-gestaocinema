@@ -28,6 +28,18 @@ senha_secreta = app.config['SECRET_KEY']
 if not os.path.exists(app.config['UPLOAD_FILMES']):
     os.makedirs(app.config['UPLOAD_FILMES'])
 
+
+def verificar_adm(id_cadastro):
+    cur = con.cursor()
+    cur.execute("SELECT tipo FROM cadastros WHERE id_cadastro = ?", (id_cadastro,))
+    tipo = cur.fetchone()
+
+    if tipo and tipo[0] == 'adm':
+        return True
+    else:
+        return False
+
+
 def normalizar_texto(texto):
     if texto:
         return unicodedata.normalize('NFC', texto)
@@ -486,6 +498,49 @@ def atualizar_filme(id):
         }
     })
 
+@app.route('/filmes/<int:id_filme>/inativar', methods=['PUT'])
+def inativar_filme(id_filme):
+    token = request.headers.get('Authorization')
+    if not token:
+        return jsonify({'mensagem': 'Token de autenticação necessário'}), 401
+
+    token = remover_bearer(token)
+
+    try:
+        payload = jwt.decode(token, senha_secreta, algorithms=['HS256'])
+        id_cadastro = payload.get('id_usuario')  # Alterado para user_type
+    except jwt.ExpiredSignatureError:
+        return jsonify({'mensagem': 'Token expirado'}), 401
+    except jwt.InvalidTokenError:
+        return jsonify({'mensagem': 'Token inválido'}), 401
+
+    # Verificar se o usuário é um administrador
+    adm = verificar_adm(id_cadastro)
+    if not adm:
+        return jsonify({'mensagem': 'Apenas administradores podem inativar filmes.'}), 403
+
+    # Conectar ao banco de dados
+    cur = con.cursor()
+
+    # Verificar se o filme existe no banco de dados
+    cur.execute("SELECT situacao FROM FILMES WHERE ID_FILME = ?", (id_filme,))
+    filme = cur.fetchone()
+
+    if not filme:
+        cur.close()
+        return jsonify({'error': 'Filme não encontrado'}), 404
+
+    # Atualizar a situação do filme
+    nova_situacao = 0 if filme[0] == 1 else 1  # Alterna entre 0 e 1
+
+    cur.execute("UPDATE FILMES SET situacao = ? WHERE ID_FILME = ?", (nova_situacao, id_filme))
+    con.commit()
+    cur.close()
+
+    # Retornar mensagem de sucesso
+    situacao_str = "inativo" if nova_situacao == 0 else "ativo"
+    return jsonify({'mensagem': f'Filme {situacao_str} com sucesso!'}), 200
+
 @app.route('/sessoes', methods=['POST'])
 def cadastrar_sessao():
     data = request.get_json()
@@ -825,6 +880,8 @@ def fazer_reserva():
     titulo_filme, sala, data_sessao, horario = cursor.fetchone()
     cursor.close()
 
+    data_formatada = data_sessao.strftime('%d-%m-%Y')
+
     # Monta e envia o e-mail
     texto = f"""Olá, {nome_usuario}!
 
@@ -832,7 +889,7 @@ Sua reserva foi realizada com sucesso. Aqui estão os detalhes da sua sessão:
 
 🎬 Filme: {titulo_filme}
 🎟 Sala: {sala}
-📅 Data: {data_sessao}
+📅 Data: {data_formatada}
 ⏰ Horário: {horario}
 💺 Assentos: {', '.join(map(str, id_assentos))}
 💰 Valor total: R$ {valor_total:.2f}
@@ -1023,48 +1080,6 @@ def listar_salas():
         'salas': salas_listadas
     }), 200
 
-@app.route('/filmes/<int:id_filme>/inativar', methods=['PUT'])
-def inativar_filme(id_filme):
-    token = request.headers.get('Authorization')
-    if not token:
-        return jsonify({'mensagem': 'Token de autenticação necessário'}), 401
-
-    token = remover_bearer(token)
-
-    try:
-        payload = jwt.decode(token, senha_secreta, algorithms=['HS256'])
-        user_type = payload.get('user_type')  # Alterado para user_type
-        print(f"User Type extraído do token: {user_type}")  # Verifique o valor de user_type
-    except jwt.ExpiredSignatureError:
-        return jsonify({'mensagem': 'Token expirado'}), 401
-    except jwt.InvalidTokenError:
-        return jsonify({'mensagem': 'Token inválido'}), 401
-
-    # Verificar se o usuário é um administrador
-    if not user_type or user_type.lower() != 'adm':
-        return jsonify({'mensagem': 'Apenas administradores podem inativar filmes.'}), 403
-
-    # Conectar ao banco de dados
-    cur = con.cursor()
-
-    # Verificar se o filme existe no banco de dados
-    cur.execute("SELECT situacao FROM FILMES WHERE ID_FILME = ?", (id_filme,))
-    filme = cur.fetchone()
-
-    if not filme:
-        cur.close()
-        return jsonify({'error': 'Filme não encontrado'}), 404
-
-    # Atualizar a situação do filme
-    nova_situacao = 0 if filme[0] == 1 else 1  # Alterna entre 0 e 1
-
-    cur.execute("UPDATE FILMES SET situacao = ? WHERE ID_FILME = ?", (nova_situacao, id_filme))
-    con.commit()
-    cur.close()
-
-    # Retornar mensagem de sucesso
-    situacao_str = "inativo" if nova_situacao == 0 else "ativo"
-    return jsonify({'mensagem': f'Filme {situacao_str} com sucesso!'}), 200
 
 def calcula_crc16(payload):
     crc16 = crcmod.mkCrcFun(0x11021, initCrc=0xFFFF, rev=False)
