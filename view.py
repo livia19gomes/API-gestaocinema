@@ -191,39 +191,54 @@ def deletar_Usuario(id):
 def criar_pdf():
     cursor = con.cursor()
     cursor.execute("SELECT ID_FILME, TITULO , GENERO , CLASSIFICACAO FROM filmes")
-    usuarios = cursor.fetchall()
+    filmes = cursor.fetchall()
     cursor.close()
 
-    pdf = FPDF()  # Configuração PDF
+    pdf = FPDF()
     pdf.set_auto_page_break(auto=True, margin=15)
     pdf.add_page()
+
+    # Título
     pdf.set_font("Arial", style='B', size=16)
-    pdf.cell(200, 10, "Relatorio de Cadastro Usuário", ln=True, align='C')
+    pdf.cell(200, 10, "Relatório de Filmes Cadastrados", ln=True, align='C')
+    pdf.ln(5)
+    pdf.line(10, pdf.get_y(), 200, pdf.get_y())
+    pdf.ln(10)
 
-    pdf.ln(5)  # Espaço entre o título e a linha
-    pdf.line(10, pdf.get_y(), 200, pdf.get_y())  # Linha abaixo do título
-    pdf.ln(5)  # Espaço após a linha
-
-    pdf.set_font("Arial", size=12)
-
-    for usuario in usuarios:
-        pdf.cell(200, 10, f"ID: {usuario[0]}", ln=True)
-        pdf.cell(200, 10, f"Título: {usuario[1]}", ln=True)
-        pdf.cell(200, 10, f"Gênero: {usuario[2]}", ln=True)
-        pdf.cell(200, 10, f"Classificação: {usuario[3]}", ln=True)
-        pdf.ln(5)  # Espaço entre cada usuário
-
-    contador_usuarios = len(usuarios)  # Contagem dos filmes
-
-    pdf.ln(10)  # Espaço antes do contador
+    # Cabeçalho das colunas
     pdf.set_font("Arial", style='B', size=12)
-    pdf.cell(200, 10, f"Total de usuários cadastrados: {contador_usuarios}", ln=True, align='C')
+    pdf.cell(40, 10, "ID", border=0)
+    pdf.cell(60, 10, "Título", border=0)
+    pdf.cell(50, 10, "Gênero", border=0)
+    pdf.cell(40, 10, "Classificação", border=0)
+    pdf.ln(8)
+    pdf.line(10, pdf.get_y(), 200, pdf.get_y())
+    pdf.ln(5)
 
-    pdf_path = "relatorio_usuarios.pdf"  # Define o caminho do PDF
-    pdf.output(pdf_path)  # Salva o PDF no caminho especificado
+    # Conteúdo dos filmes
+    pdf.set_font("Arial", size=12)
+    for filme in filmes:
+        pdf.cell(40, 10, str(filme[0]), border=0)
+        pdf.cell(60, 10, str(filme[1]), border=0)
+        pdf.cell(50, 10, str(filme[2]), border=0)
+        pdf.cell(40, 10, str(filme[3]), border=0)
+        pdf.ln(8)
+        y = pdf.get_y()
+        pdf.line(10, y, 200, y)
+        pdf.ln(2)
 
-    return send_file(pdf_path, as_attachment=True, mimetype='application/pdf')  # Envia o PDF gerado como anexo na resposta HTTP
+    # Total
+    pdf.ln(10)
+    pdf.set_font("Arial", style='B', size=12)
+    pdf.cell(200, 10, f"Total de filmes cadastrados: {len(filmes)}", ln=True, align='C')
 
+    # Salvar e enviar o PDF
+    pdf_path = "relatorio_filmes.pdf"
+    pdf.output(pdf_path)
+    return send_file(pdf_path, as_attachment=True, mimetype='application/pdf')
+
+if __name__ == '__main__':
+    app.run(debug=True)
 @app.route('/cadastros/<int:id>', methods=['PUT'])
 def atualizar_usuario(id):
     cur = con.cursor()
