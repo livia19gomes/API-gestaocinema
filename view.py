@@ -39,7 +39,6 @@ def verificar_adm(id_cadastro):
     else:
         return False
 
-
 def normalizar_texto(texto):
     if texto:
         return unicodedata.normalize('NFC', texto)
@@ -1115,6 +1114,7 @@ def gerar_pix():
                 format_tlv("00", "br.gov.bcb.pix") +
                 format_tlv("01", chave_pix)
         )
+
         campo_26 = format_tlv("26", merchant_account_info)
 
         payload_sem_crc = (
