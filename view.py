@@ -16,7 +16,12 @@ from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from email.mime.base import MIMEBase
 from email import encoders
+from itsdangerous import URLSafeTimedSerializer
+from itsdangerous import SignatureExpired, BadSignature
 import os
+import base64
+from werkzeug.security import generate_password_hash
+
 
 app = Flask(__name__)
 
@@ -44,48 +49,43 @@ def normalizar_texto(texto):
         return unicodedata.normalize('NFC', texto)
     return texto
 
-def enviar_email_para(destinatario, corpo, caminho_anexo=None):
+def enviar_email_para(destinatario, assunto, corpo_html, caminho_anexo=None):
     try:
-        # Criação da mensagem
         msg = MIMEMultipart()
         msg['From'] = 'primecine00@gmail.com'
         msg['To'] = destinatario
-        msg['Subject'] = 'Confirmação de Reserva - PrimeCine'
+        msg['Subject'] = assunto
 
-        # Corpo do e-mail
-        msg.attach(MIMEText(corpo, 'plain'))
+        # Corpo do e-mail (HTML)
+        msg.attach(MIMEText(corpo_html, 'html'))
 
-        # Adicionando anexo, se houver
-        if caminho_anexo:
+        # Anexo (caso exista)
+        if caminho_anexo and os.path.exists(caminho_anexo):
             with open(caminho_anexo, 'rb') as f:
                 parte = MIMEBase('application', 'octet-stream')
                 parte.set_payload(f.read())
                 encoders.encode_base64(parte)
-                parte.add_header('Content-Disposition', f'attachment; filename={os.path.basename(caminho_anexo)}')
+                parte.add_header(
+                    'Content-Disposition',
+                    f'attachment; filename={os.path.basename(caminho_anexo)}'
+                )
                 msg.attach(parte)
 
-        # Conexão segura via SSL com o servidor SMTP
+        # Envia e-mail via Gmail
         servidor = smtplib.SMTP_SSL('smtp.gmail.com', 465)
-        servidor.set_debuglevel(1)  # Habilita o modo de depuração para ver os detalhes da conexão
-
-        # Login
-        servidor.login('primecine00@gmail.com', 'zzzj kwhn mnhb vtrx')  # Senha de app
-
-        # Envio do e-mail
+        servidor.login('primecine00@gmail.com', 'zzzj kwhn mnhb vtrx')  # Senha de app do Gmail
         servidor.send_message(msg)
-        print('E-mail enviado com sucesso!')
+        servidor.quit()
+        print('✅ E-mail enviado com sucesso!')
 
     except smtplib.SMTPConnectError as e:
-        print(f"Erro ao conectar ao servidor SMTP: {e}")
+        print(f"❌ Erro de conexão com SMTP: {e}")
     except smtplib.SMTPAuthenticationError as e:
-        print(f"Erro de autenticação SMTP: {e}")
+        print(f"❌ Erro de autenticação SMTP: {e}")
     except smtplib.SMTPException as e:
-        print(f"Erro ao enviar o e-mail: {e}")
-    finally:
-        try:
-            servidor.quit()  # Fecha a conexão com o servidor SMTP
-        except Exception as e:
-            print(f"Erro ao fechar a conexão com o servidor: {e}")
+        print(f"❌ Erro ao enviar e-mail: {e}")
+    except Exception as e:
+        print(f"❌ Erro inesperado: {e}")
 
 def remover_bearer(token):  # Remove o bearer
     if token.startswith('Bearer '):
@@ -187,58 +187,65 @@ def deletar_Usuario(id):
         'id_usuario': id
     })
 
+
 @app.route('/relatorio', methods=['GET'])
 def criar_pdf():
-    cursor = con.cursor()
-    cursor.execute("SELECT ID_FILME, TITULO , GENERO , CLASSIFICACAO FROM filmes")
-    filmes = cursor.fetchall()
-    cursor.close()
+    cur = con.cursor()
+
+    # Adicionando a cláusula WHERE para filtrar apenas os filmes ativos
+    cur.execute(
+        "SELECT ID_FILME, TITULO, GENERO, CLASSIFICACAO FROM filmes WHERE situacao = 'ativo'")
+    filmes = cur.fetchall()
+    cur.close()
 
     pdf = FPDF()
     pdf.set_auto_page_break(auto=True, margin=15)
     pdf.add_page()
 
-    # Título
-    pdf.set_font("Arial", style='B', size=16)
+    # Título - Ajustando o tamanho da fonte
+    pdf.set_font("Arial", style='B', size=14)  # Tamanho da fonte do título foi alterado para 14
     pdf.cell(200, 10, "Relatório de Filmes Cadastrados", ln=True, align='C')
     pdf.ln(5)
     pdf.line(10, pdf.get_y(), 200, pdf.get_y())
     pdf.ln(10)
 
-    # Cabeçalho das colunas
+    # Cabeçalho da tabela
     pdf.set_font("Arial", style='B', size=12)
-    pdf.cell(40, 10, "ID", border=0)
-    pdf.cell(60, 10, "Título", border=0)
-    pdf.cell(50, 10, "Gênero", border=0)
-    pdf.cell(40, 10, "Classificação", border=0)
-    pdf.ln(8)
-    pdf.line(10, pdf.get_y(), 200, pdf.get_y())
-    pdf.ln(5)
+    pdf.cell(30, 10, "ID", border=1, align='C')
+    pdf.cell(70, 10, "Título", border=1, align='C')
+    pdf.cell(50, 10, "Gênero", border=1, align='C')
+    pdf.cell(40, 10, "Classificação", border=1, align='C')
+    pdf.ln()
 
-    # Conteúdo dos filmes
+    # Dados da tabela
     pdf.set_font("Arial", size=12)
     for filme in filmes:
-        pdf.cell(40, 10, str(filme[0]), border=0)
-        pdf.cell(60, 10, str(filme[1]), border=0)
-        pdf.cell(50, 10, str(filme[2]), border=0)
-        pdf.cell(40, 10, str(filme[3]), border=0)
-        pdf.ln(8)
-        y = pdf.get_y()
-        pdf.line(10, y, 200, y)
-        pdf.ln(2)
+        pdf.cell(30, 10, str(filme[0]), border=1, align='C')
+
+        # Evitar quebra de linha no título
+        titulo = str(filme[1])
+        pdf.cell(70, 10, titulo, border=1, align='C')  # Título sem quebra de linha
+
+        pdf.cell(50, 10, str(filme[2]), border=1, align='C')
+        pdf.cell(40, 10, str(filme[3]), border=1, align='C')
+
+        pdf.ln()  # Nova linha após cada linha de dados
 
     # Total
     pdf.ln(10)
     pdf.set_font("Arial", style='B', size=12)
     pdf.cell(200, 10, f"Total de filmes cadastrados: {len(filmes)}", ln=True, align='C')
 
-    # Salvar e enviar o PDF
+    # Salvar e enviar
     pdf_path = "relatorio_filmes.pdf"
     pdf.output(pdf_path)
     return send_file(pdf_path, as_attachment=True, mimetype='application/pdf')
 
+
 if __name__ == '__main__':
     app.run(debug=True)
+
+
 @app.route('/cadastros/<int:id>', methods=['PUT'])
 def atualizar_usuario(id):
     cur = con.cursor()
@@ -369,6 +376,71 @@ def logout():
         return jsonify({"error": "Token expirado"}), 401
     except jwt.InvalidTokenError:
         return jsonify({"error": "Token inválido"}), 401
+
+@app.route('/esqueci-minha-senha', methods=['POST'])
+def esqueci_minha_senha():
+    data = request.get_json()
+    email = data.get('email')
+
+    if not email:
+        return jsonify({"error": "O campo 'email' é obrigatório."}), 400
+
+    cur = con.cursor()
+    cur.execute("SELECT id_cadastro, nome FROM CADASTROS WHERE EMAIL = ?", (email,))
+    usuario = cur.fetchone()
+    cur.close()
+
+    if not usuario:
+        return jsonify({"error": "Email não encontrado."}), 404
+
+    id_cadastro, nome_usuario = usuario
+
+    # Gera o token com URLSafeTimedSerializer
+    s = URLSafeTimedSerializer(app.config['SECRET_KEY'])
+    token = s.dumps({'id_cadastro': id_cadastro})
+
+    link_redefinicao = f"http://seusite.com/redefinir-senha?token={token}"
+    print(f"Link de redefinição: {link_redefinicao}")
+
+    corpo_html = f"""
+        <h3>Olá, {nome_usuario}!</h3>
+        <p>Você solicitou uma redefinição de senha.</p>
+        <p>Clique no link abaixo (válido por 1 hora):</p>
+        <a href="{link_redefinicao}">{link_redefinicao}</a>
+    """
+
+    enviar_email_para(email, "🔐 Redefinição de Senha - PrimeCine", corpo_html)
+
+    return jsonify({"message": "Link de redefinição de senha enviado para seu e-mail."}), 200
+
+
+@app.route('/redefinir-senha', methods=['POST'])
+def redefinir_senha():
+    data = request.get_json()
+    token = data.get('token')
+    nova_senha = data.get('nova_senha')
+
+    if not token or not nova_senha:
+        return jsonify({"error": "Todos os campos são obrigatórios."}), 400
+
+    s = URLSafeTimedSerializer(app.config['SECRET_KEY'])
+
+    try:
+        dados = s.loads(token, max_age=3600)  # 1 hora de validade
+        id_cadastro = dados['id_cadastro']
+    except SignatureExpired:
+        return jsonify({"error": "O link expirou. Solicite uma nova redefinição."}), 400
+    except BadSignature:
+        return jsonify({"error": "Token inválido."}), 400
+
+    senha_hash = generate_password_hash(nova_senha)
+
+    cur = con.cursor()
+    cur.execute("UPDATE CADASTROS SET senha = ? WHERE id_cadastro = ?", (senha_hash, id_cadastro))
+    con.commit()
+    cur.close()
+
+    return jsonify({"message": "Senha redefinida com sucesso."}), 200
 
 @app.route('/filme_imagem', methods=['POST'])
 def cadastar_filme_imagem():
@@ -896,30 +968,58 @@ def fazer_reserva():
 
     data_formatada = data_sessao.strftime('%d-%m-%Y')
 
+    with open(caminho_qr_completo, "rb") as image_file:
+        qr_base64 = base64.b64encode(image_file.read()).decode('utf-8')
+
+
     # Monta e envia o e-mail
-    texto = f"""Olá, {nome_usuario}!
+    texto = f"""
+    <html>
+      <body style="font-family: Arial, sans-serif; background-color: #f9f9f9; padding: 20px; color: #333;">
+        <div style="max-width: 600px; margin: auto; background-color: #fff; border-radius: 8px; box-shadow: 0 0 10px rgba(0,0,0,0.05); padding: 20px;">
+          <h2 style="color: #cc0000;">Olá, {nome_usuario}!</h2>
+          <p>Sua reserva foi realizada com sucesso. Aqui estão os detalhes da sua sessão:</p>
 
-Sua reserva foi realizada com sucesso. Aqui estão os detalhes da sua sessão:
+          <table style="width: 100%; border-collapse: collapse; margin-top: 15px;">
+            <tr style="background-color: #eee;">
+              <th align="left" style="padding: 8px;">🎬 Filme:</th>
+              <td style="padding: 8px;">{titulo_filme}</td>
+            </tr>
+            <tr>
+              <th align="left" style="padding: 8px;">🎟 Sala:</th>
+              <td style="padding: 8px;">{sala}</td>
+            </tr>
+            <tr style="background-color: #eee;">
+              <th align="left" style="padding: 8px;">📅 Data:</th>
+              <td style="padding: 8px;">{data_formatada}</td>
+            </tr>
+            <tr>
+              <th align="left" style="padding: 8px;">⏰ Horário:</th>
+              <td style="padding: 8px;">{horario}</td>
+            </tr>
+            <tr style="background-color: #eee;">
+              <th align="left" style="padding: 8px;">💺 Assentos:</th>
+              <td style="padding: 8px;">{', '.join(map(str, id_assentos))}</td>
+            </tr>
+            <tr>
+              <th align="left" style="padding: 8px;">💰 Valor total:</th>
+              <td style="padding: 8px;">R$ {valor_total:.2f}</td>
+            </tr>
+          </table>
 
-🎬 Filme: {titulo_filme}
-🎟 Sala: {sala}
-📅 Data: {data_formatada}
-⏰ Horário: {horario}
-💺 Assentos: {', '.join(map(str, id_assentos))}
-💰 Valor total: R$ {valor_total:.2f}
+          <div style="margin-top: 30px;">
+            <h3>🔢 Código PIX:</h3>
+            <p style="word-wrap: break-word; background-color: #f2f2f2; padding: 10px; border-left: 5px solid #cc0000;">
+              {codigo_pix}
+            </p>
+          <p style="margin-top: 30px;">Estamos ansiosos para te receber na sessão! Prepare a pipoca! 🍿✨</p>
 
-Para efetuar o pagamento via PIX, copie o código abaixo e cole no app do seu banco:
+          <p style="color: #888; font-size: 12px;">Atenciosamente,<br>Equipe <strong>PrimeCine</strong></p>
+        </div>
+      </body>
+    </html>
+    """
 
-🔢 Código PIX:
-{codigo_pix}
-
-Ou, se preferir, escaneie o QR Code em anexo! 📲
-
-Estamos ansiosos para te receber na sessão! Prepare a pipoca! 🍿✨
-
-Atenciosamente,
-Equipe PrimeCine
-"""
 
     mensagem = "Reserva realizada com sucesso!"
     erro_email = None
