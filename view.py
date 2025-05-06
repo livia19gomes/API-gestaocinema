@@ -20,7 +20,7 @@ from itsdangerous import URLSafeTimedSerializer
 from itsdangerous import SignatureExpired, BadSignature
 import os
 import base64
-from werkzeug.security import generate_password_hash
+from werkzeug.security import generate_password_hash, check_password_hash
 
 
 app = Flask(__name__)
@@ -146,15 +146,18 @@ def cadastro_usuario():
         return senha_check
 
     cur = con.cursor()
-
     cur.execute("SELECT 1 FROM cadastros WHERE email = ?", (email,))
 
     if cur.fetchone():
         return jsonify({"error": "Este usuário já foi cadastrado!"}), 400
 
-    senha = generate_password_hash(senha).decode('utf-8')
+    # Hash da senha com Werkzeug — NÃO usa .decode()
+    senha = generate_password_hash(senha)
 
-    cur.execute("INSERT INTO CADASTROS (NOME, TELEFONE, EMAIL, SENHA, TIPO, ativo) VALUES(?, ?, ?, ?, ?, ?)", (nome, telefone, email, senha, tipo, True))
+    cur.execute(
+        "INSERT INTO CADASTROS (NOME, TELEFONE, EMAIL, SENHA, TIPO, ativo) VALUES (?, ?, ?, ?, ?, ?)",
+        (nome, telefone, email, senha, tipo, True)
+    )
 
     con.commit()
     cur.close()
@@ -167,7 +170,7 @@ def cadastro_usuario():
             'email': email,
             'tipo': tipo
         }
-    }),200
+    }), 200
 
 @app.route('/cadastros/<int:id>', methods=['DELETE'])
 def deletar_Usuario(id):
@@ -317,15 +320,13 @@ def login():
 
     if not usuario:
         return jsonify({"error": "Usuário ou senha inválidos."}), 401
-    email = usuario[6]
 
+    senha_armazenada = usuario[0]
+    tipo = usuario[1]
+    id_cadastro = usuario[2]
     ativo = usuario[3]
 
     if ativo != False:
-        senha_armazenada = usuario[0]
-        tipo = usuario[1]
-        id_cadastro = usuario[2]
-
         if check_password_hash(senha_armazenada, senha):
             token = generate_token(id_cadastro, email)
 
@@ -399,19 +400,72 @@ def esqueci_minha_senha():
     s = URLSafeTimedSerializer(app.config['SECRET_KEY'])
     token = s.dumps({'id_cadastro': id_cadastro})
 
-    link_redefinicao = f"http://seusite.com/redefinir-senha?token={token}"
+    # O código de redefinição será o token gerado
+    link_redefinicao = f"{token}"
+
     print(f"Link de redefinição: {link_redefinicao}")
 
+    # Corpo do email com fundo e o código em vez do botão
     corpo_html = f"""
-        <h3>Olá, {nome_usuario}!</h3>
-        <p>Você solicitou uma redefinição de senha.</p>
-        <p>Clique no link abaixo (válido por 1 hora):</p>
-        <a href="{link_redefinicao}">{link_redefinicao}</a>
+    <html>
+    <head>
+        <style>
+            body {{
+                font-family: Arial, sans-serif;
+                background-color: #f4f4f4;  /* Cor de fundo do corpo do email */
+                margin: 0;
+                padding: 0;
+            }}
+            .container {{
+                width: 100%;
+                max-width: 600px;
+                margin: 0 auto;
+                background-color: #ffffff;  /* Cor de fundo da área do conteúdo */
+                padding: 20px;
+                border-radius: 8px;
+                box-shadow: 0 4px 8px rgba(0, 0, 0, 0.1);
+            }}
+            h3 {{
+                color: #FF0000;  /* Cor vermelha para 'Olá, Lívia!' */
+                font-size: 22px;
+            }}
+            p {{
+                color: #555555;
+                font-size: 16px;
+                line-height: 1.6;
+            }}
+            .codigo {{
+                color: #000000;  /* Cor preta para o código de redefinição */
+                font-size: 18px;
+                font-weight: bold;
+            }}
+            .footer {{
+                text-align: center;
+                font-size: 14px;
+                color: #777777;
+                margin-top: 20px;
+            }}
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <h3>Olá, {nome_usuario}!</h3>
+            <p>Você solicitou a redefinição de sua senha no PrimeCine. Se você não fez essa solicitação, pode ignorar este e-mail.</p>
+            <p>O código de redefinição de sua senha é:</p>
+            <p class="codigo">{link_redefinicao}</p>  <!-- Código em preto -->
+            <p>O código será válido por 1 hora. Use-o para redefinir sua senha.</p>
+            <div class="footer">
+                <p>Equipe PrimeCine</p>
+                <p><small>Se você não solicitou a redefinição, ignore este e-mail.</small></p>
+            </div>
+        </div>
+    </body>
+    </html>
     """
 
     enviar_email_para(email, "🔐 Redefinição de Senha - PrimeCine", corpo_html)
 
-    return jsonify({"message": "Link de redefinição de senha enviado para seu e-mail."}), 200
+    return jsonify({"message": "Código de redefinição de senha enviado para seu e-mail."}), 200
 
 
 @app.route('/redefinir-senha', methods=['POST'])
@@ -464,6 +518,7 @@ def cadastar_filme_imagem():
     sinopse = request.form.get('sinopse')
     imagem = request.files.get('imagem')  # Arquivo enviado
     duracao = request.form.get('duracao')
+    link = request.form.get('link')  # Novo campo para o link
 
     cursor = con.cursor()
     # Verifica se o filme já existe
@@ -474,8 +529,8 @@ def cadastar_filme_imagem():
 
     # Insere o novo filme e retorna o ID gerado
     cursor.execute(
-        "INSERT INTO filmes (TITULO, CLASSIFICACAO, GENERO, SINOPSE, DURACAO) VALUES (?, ?, ?, ?, ?) RETURNING ID_filme",
-        (titulo, classificacao, genero, sinopse, duracao)
+        "INSERT INTO filmes (TITULO, CLASSIFICACAO, GENERO, SINOPSE, DURACAO, LINK) VALUES (?, ?, ?, ?, ?, ?) RETURNING ID_filme",
+        (titulo, classificacao, genero, sinopse, duracao, link)
     )
     filme_id = cursor.fetchone()[0]
     con.commit()
@@ -498,14 +553,15 @@ def cadastar_filme_imagem():
             'genero': genero,
             'sinopse': sinopse,
             'imagem_path': imagem_path,
-            'duracao': duracao
+            'duracao': duracao,
+            'link': link
         }
     }), 201
 
 @app.route('/filmes', methods=['GET'])
 def listar_filmes():
     cur = con.cursor()
-    cur.execute("SELECT id_filme, titulo, classificacao, genero, sinopse FROM filmes WHERE SITUACAO = 1")
+    cur.execute("SELECT id_filme, titulo, classificacao, genero, sinopse, duracao, link FROM filmes WHERE SITUACAO = 1")
     filmes = cur.fetchall()
 
     filmes_lista = []  # Cria uma lista vazia para armazenar os filmes
@@ -518,6 +574,8 @@ def listar_filmes():
             'classificacao': filme[2],  # Armazena a 'classificacao' na chave 'classificacao'
             'genero': filme[3],    # Armazena o 'genero' na chave 'genero'
             'sinopse': filme[4],   # Armazena a 'sinopse' na chave 'sinopse'
+            'duracao': filme [5],
+            'link': filme[6]
         })
 
     cur.close()  # Fecha o cursor
@@ -529,7 +587,7 @@ def listar_filmes():
 @app.route('/filme_imagem/<int:id>', methods=['PUT'])
 def atualizar_filme(id):
     cur = con.cursor()
-    cur.execute("SELECT id_filme, titulo, genero, classificacao, sinopse, situacao FROM FILMES WHERE id_filme =?", (id,))
+    cur.execute("SELECT id_filme, titulo, genero, classificacao, sinopse, duracao, link, situacao FROM FILMES WHERE id_filme =?", (id,))
     filme_data = cur.fetchone()
 
     if not filme_data:  # Se não existir, vai retornar um erro
@@ -537,13 +595,15 @@ def atualizar_filme(id):
         return jsonify({"error": "Filme não foi encontrado"}), 404
 
     titulo_armazenado = filme_data[1]  # Armazena o título do filme
-    situacao_armazenada = filme_data[5]
+    situacao_armazenada = filme_data[7]
 
     # Captura os dados do formulário e normaliza
     titulo = normalizar_texto(request.form.get('titulo'))
     classificacao = normalizar_texto(request.form.get('classificacao'))
     genero = normalizar_texto(request.form.get('genero'))
     sinopse = normalizar_texto(request.form.get('sinopse'))
+    duracao = normalizar_texto(request.form.get('duracao'))
+    link = normalizar_texto(request.form.get('link'))
     situacao = normalizar_texto(request.form.get('situacao'))
     imagem = request.files.get('imagem')  # Arquivo enviado
 
@@ -557,8 +617,8 @@ def atualizar_filme(id):
             return jsonify({"message": "Este filme já foi cadastrado!"}), 400
 
     cur.execute(
-        "UPDATE filmes SET titulo = ?, genero = ?, classificacao = ?, sinopse = ?, situacao = ? WHERE id_filme = ?",
-        (titulo, genero, classificacao, sinopse, situacao, id)
+        "UPDATE filmes SET titulo = ?, genero = ?, classificacao = ?, sinopse = ?, duracao = ?, link = ?, situacao = ? WHERE id_filme = ?",
+        (titulo, genero, classificacao, sinopse, duracao, link, situacao, id)
     )
 
     con.commit()
@@ -580,6 +640,8 @@ def atualizar_filme(id):
             'classificacao': classificacao,
             'sinopse': sinopse,
             'situacao': situacao,
+            'duracao': duracao,
+            'link': link,
             'imagem_path': imagem_path
         }
     })
