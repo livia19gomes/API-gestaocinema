@@ -21,7 +21,7 @@ from itsdangerous import SignatureExpired, BadSignature
 import os
 import base64
 from werkzeug.security import generate_password_hash, check_password_hash
-
+from functools import wraps
 
 app = Flask(__name__)
 
@@ -49,7 +49,7 @@ def normalizar_texto(texto):
         return unicodedata.normalize('NFC', texto)
     return texto
 
-def enviar_email_para(destinatario, assunto, corpo_html, caminho_anexo=None):
+def enviar_email_para(destinatario, corpo_html, caminho_anexo=None, assunto="PrimeCine"):
     try:
         msg = MIMEMultipart()
         msg['From'] = 'primecine00@gmail.com'
@@ -1081,8 +1081,6 @@ def fazer_reserva():
       </body>
     </html>
     """
-
-
     mensagem = "Reserva realizada com sucesso!"
     erro_email = None
     try:
@@ -1347,3 +1345,49 @@ def gerar_pix():
         return send_file(caminho_arquivo, mimetype='image/png', as_attachment=True, download_name=nome_arquivo)
     except Exception as e:
         return jsonify({"erro": f"Ocorreu um erro internosse: {str(e)}"}), 500
+
+
+
+
+
+# Função para checar se o usuário é um administrador
+def administrador_required(f):
+    @wraps(f)
+    def decorator(*args, **kwargs):
+        # Lógica para verificar se o usuário tem permissão de administrador
+        # Supondo que você tenha uma função `is_admin` que retorna se o usuário é admin
+        if not is_admin():
+            return jsonify({'erro': 'Acesso restrito a administradores'}), 403
+        return f(*args, **kwargs)
+    return decorator
+
+# Função que verifica se o usuário é administrador (essa parte pode variar)
+def is_admin():
+    # Lógica para verificar se o usuário é administrador
+    # Por exemplo, verificar um campo no banco de dados ou validar o token
+    return True  # Simulando que o usuário é admin
+
+@app.route('/configurar-pix', methods=['POST'])
+@administrador_required
+def configurar_pix():
+    dados = request.get_json()
+
+    razao_social = dados.get('razao_social')
+    nome_fantasia = dados.get('nome_fantasia')
+    chave_pix = dados.get('chave_pix')
+    cidade = dados.get('cidade')
+
+    try:
+        cur = con.cursor()
+        cur.execute("""UPDATE CONFIG_CINE SET RAZAO_SOCIAL = ?, NOME_FANTASIA = ?, CHAVE_PIX = ?, CIDADE = ?""",
+                    (razao_social, nome_fantasia, chave_pix, cidade))
+        con.commit()
+        cur.close()
+
+        return jsonify({'mensagem': 'Dados de PIX atualizados com sucesso!'}), 200
+
+    except Exception as e:
+        return jsonify({'erro': f'Erro ao atualizar os dados: {str(e)}'}), 500
+
+if __name__ == '__main__':
+    app.run(debug=True)
