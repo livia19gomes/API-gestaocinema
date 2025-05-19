@@ -22,9 +22,11 @@ import os
 import base64
 from werkzeug.security import generate_password_hash, check_password_hash
 from functools import wraps
+import fdb
+from datetime import date
+import random
 
 app = Flask(__name__)
-
 CORS(app, origins=["*"])
 
 app.config.from_pyfile('config.py')
@@ -49,7 +51,8 @@ def normalizar_texto(texto):
         return unicodedata.normalize('NFC', texto)
     return texto
 
-def enviar_email_para(destinatario, corpo_html, caminho_anexo=None, assunto="PrimeCine"):
+def enviar_email_para(destinatario, corpo_html,  assunto="PrimeCine", caminho_anexo=None):
+
     try:
         msg = MIMEMultipart()
         msg['From'] = 'primecine00@gmail.com'
@@ -76,16 +79,16 @@ def enviar_email_para(destinatario, corpo_html, caminho_anexo=None, assunto="Pri
         servidor.login('primecine00@gmail.com', 'zzzj kwhn mnhb vtrx')  # Senha de app do Gmail
         servidor.send_message(msg)
         servidor.quit()
-        print('✅ E-mail enviado com sucesso!')
+        print('E-mail enviado com sucesso!')
 
     except smtplib.SMTPConnectError as e:
-        print(f"❌ Erro de conexão com SMTP: {e}")
+        print(f"Erro de conexão com SMTP: {e}")
     except smtplib.SMTPAuthenticationError as e:
-        print(f"❌ Erro de autenticação SMTP: {e}")
+        print(f"Erro de autenticação SMTP: {e}")
     except smtplib.SMTPException as e:
-        print(f"❌ Erro ao enviar e-mail: {e}")
+        print(f"Erro ao enviar e-mail: {e}")
     except Exception as e:
-        print(f"❌ Erro inesperado: {e}")
+        print(f"Erro inesperado: {e}")
 
 def remover_bearer(token):  # Remove o bearer
     if token.startswith('Bearer '):
@@ -197,7 +200,7 @@ def criar_pdf():
 
     # Adicionando a cláusula WHERE para filtrar apenas os filmes ativos
     cur.execute(
-        "SELECT ID_FILME, TITULO, GENERO, CLASSIFICACAO FROM filmes WHERE situacao = 'ativo'")
+        "SELECT ID_FILME, TITULO, GENERO, CLASSIFICACAO FROM filmes WHERE situacao = ?", (1,))
     filmes = cur.fetchall()
     cur.close()
 
@@ -303,12 +306,14 @@ def atualizar_usuario(id):
     })
 
 tentativas = 0
+
 @app.route('/login', methods=['POST'])
 def login():
     data = request.get_json()
     email = data.get('email')
     senha = data.get('senha')
     global tentativas
+
 
     if not email or not senha:
         return jsonify({"error": "Todos os campos (email, senha) são obrigatórios."}), 400
@@ -378,123 +383,83 @@ def logout():
     except jwt.InvalidTokenError:
         return jsonify({"error": "Token inválido"}), 401
 
+codigos_temp = {}
+
+# Endpoint: Solicitar recuperação de senha
 @app.route('/esqueci-minha-senha', methods=['POST'])
 def esqueci_minha_senha():
     data = request.get_json()
     email = data.get('email')
 
     if not email:
-        return jsonify({"error": "O campo 'email' é obrigatório."}), 400
+        return jsonify({"error": "Informe o email."}), 400
 
+    # Simula a busca no banco
     cur = con.cursor()
-    cur.execute("SELECT id_cadastro, nome FROM CADASTROS WHERE EMAIL = ?", (email,))
+    cur.execute("SELECT id_cadastro, nome FROM cadastros WHERE email = ?", (email,))
     usuario = cur.fetchone()
     cur.close()
 
     if not usuario:
         return jsonify({"error": "Email não encontrado."}), 404
 
-    id_cadastro, nome_usuario = usuario
+    id_cadastro, nome = usuario
 
-    # Gera o token com URLSafeTimedSerializer
-    s = URLSafeTimedSerializer(app.config['SECRET_KEY'])
-    token = s.dumps({'id_cadastro': id_cadastro})
+    # Gera código e define validade de 10 minutos
+    codigo = str(random.randint(100000, 999999))
+    expiracao = datetime.now() + timedelta(minutes=10)
+    codigos_temp[email] = (codigo, expiracao)
 
-    # O código de redefinição será o token gerado
-    link_redefinicao = f"{token}"
-
-    print(f"Link de redefinição: {link_redefinicao}")
-
-    # Corpo do email com fundo e o código em vez do botão
     corpo_html = f"""
     <html>
-    <head>
-        <style>
-            body {{
-                font-family: Arial, sans-serif;
-                background-color: #f4f4f4;  /* Cor de fundo do corpo do email */
-                margin: 0;
-                padding: 0;
-            }}
-            .container {{
-                width: 100%;
-                max-width: 600px;
-                margin: 0 auto;
-                background-color: #ffffff;  /* Cor de fundo da área do conteúdo */
-                padding: 20px;
-                border-radius: 8px;
-                box-shadow: 0 4px 8px rgba(0, 0, 0, 0.1);
-            }}
-            h3 {{
-                color: #FF0000;  /* Cor vermelha para 'Olá, Lívia!' */
-                font-size: 22px;
-            }}
-            p {{
-                color: #555555;
-                font-size: 16px;
-                line-height: 1.6;
-            }}
-            .codigo {{
-                color: #000000;  /* Cor preta para o código de redefinição */
-                font-size: 18px;
-                font-weight: bold;
-            }}
-            .footer {{
-                text-align: center;
-                font-size: 14px;
-                color: #777777;
-                margin-top: 20px;
-            }}
-        </style>
-    </head>
-    <body>
-        <div class="container">
-            <h3>Olá, {nome_usuario}!</h3>
-            <p>Você solicitou a redefinição de sua senha no PrimeCine. Se você não fez essa solicitação, pode ignorar este e-mail.</p>
-            <p>O código de redefinição de sua senha é:</p>
-            <p class="codigo">{link_redefinicao}</p>  <!-- Código em preto -->
-            <p>O código será válido por 1 hora. Use-o para redefinir sua senha.</p>
-            <div class="footer">
-                <p>Equipe PrimeCine</p>
-                <p><small>Se você não solicitou a redefinição, ignore este e-mail.</small></p>
-            </div>
+      <body style="font-family: Arial, sans-serif; background-color: #f9f9f9; padding: 20px; color: #333;">
+        <div style="max-width: 600px; margin: auto; background-color: #fff; border-radius: 8px; box-shadow: 0 0 10px rgba(0,0,0,0.05); padding: 20px;">
+          <h2 style="color: #cc0000;">Olá, {nome}!</h2>
+          <p>Recebemos uma solicitação para redefinir a sua senha.</p>
+
+          <p style="margin-top: 20px;">Use o código abaixo para continuar com o processo de redefinição. Ele é válido por <strong>10 minutos</strong>:</p>
+
+          <div style="font-size: 24px; font-weight: bold; color: #cc0000; background-color: #f2f2f2; padding: 15px; text-align: center; border-radius: 5px; margin: 20px 0;">
+            {codigo}
+          </div>
+
+          <p style="margin-top: 30px;">Se você não solicitou essa alteração, ignore este e-mail com segurança.</p>
+
+          <p style="color: #888; font-size: 12px; margin-top: 40px;">Atenciosamente,<br>Equipe <strong>PrimeCine</strong></p>
         </div>
-    </body>
+      </body>
     </html>
     """
 
-    enviar_email_para(email, "🔐 Redefinição de Senha - PrimeCine", corpo_html)
+    enviar_email_para(email, corpo_html, assunto="Código de Recuperação - PrimeCine")
+    return jsonify({"message": "Código enviado para o e-mail."})
 
-    return jsonify({"message": "Código de redefinição de senha enviado para seu e-mail."}), 200
-
-
-@app.route('/redefinir-senha', methods=['POST'])
-def redefinir_senha():
+# Endpoint: Verificar código enviado
+@app.route('/verificar-codigo', methods=['POST'])
+def verificar_codigo():
     data = request.get_json()
-    token = data.get('token')
-    nova_senha = data.get('nova_senha')
+    email = data.get('email')
+    codigo_recebido = data.get('codigo')
 
-    if not token or not nova_senha:
-        return jsonify({"error": "Todos os campos são obrigatórios."}), 400
+    if not email or not codigo_recebido:
+        return jsonify({"error": "Informe o email e o código."}), 400
 
-    s = URLSafeTimedSerializer(app.config['SECRET_KEY'])
+    codigo_salvo, validade = codigos_temp.get(email, (None, None))
 
-    try:
-        dados = s.loads(token, max_age=3600)  # 1 hora de validade
-        id_cadastro = dados['id_cadastro']
-    except SignatureExpired:
-        return jsonify({"error": "O link expirou. Solicite uma nova redefinição."}), 400
-    except BadSignature:
-        return jsonify({"error": "Token inválido."}), 400
+    if not codigo_salvo:
+        return jsonify({"error": "Nenhum código encontrado para este e-mail."}), 404
 
-    senha_hash = generate_password_hash(nova_senha)
+    if datetime.now() > validade:
+        del codigos_temp[email]
+        return jsonify({"error": "Código expirado."}), 410
 
-    cur = con.cursor()
-    cur.execute("UPDATE CADASTROS SET senha = ? WHERE id_cadastro = ?", (senha_hash, id_cadastro))
-    con.commit()
-    cur.close()
+    if codigo_recebido != codigo_salvo:
+        return jsonify({"error": "Código incorreto."}), 401
 
-    return jsonify({"message": "Senha redefinida com sucesso."}), 200
+    # Código está válido
+    del codigos_temp[email]  # remove para evitar reuso
+    return jsonify({"message": "Código verificado com sucesso."})
+
 
 @app.route('/filme_imagem', methods=['POST'])
 def cadastar_filme_imagem():
@@ -768,7 +733,9 @@ def listar_sessoes(id_filme):
         LEFT JOIN filmes f ON f.id_filme = s.id_filme
         LEFT JOIN salas sa ON sa.id_salas = s.id_sala
         WHERE s.id_filme = ?
+        ORDER BY s.data_sessao ASC, s.horario ASC
     """, (id_filme,))
+
 
     sessoes = cur.fetchall()
     sessoes_dic = []
@@ -1019,19 +986,12 @@ def fazer_reserva():
     # Detalhes da sessão
     cursor = con.cursor()
     cursor.execute("""
-        SELECT f.titulo, sa.descricao, s.data_sessao, s.horario
-        FROM sessoes s
-        JOIN filmes f ON f.id_filme = s.ID_FILME
-        JOIN salas sa ON sa.ID_SALAS = s.ID_SALA
-        WHERE s.ID_SESSAO = ?
-    """, (id_sessao,))
+        SELECT f.titulo, sa.descricao, s.data_sessao, s.horario FROM sessoes s JOIN filmes f ON f.id_filme = s.ID_FILME JOIN salas sa ON sa.ID_SALAS = s.ID_SALA
+        WHERE s.ID_SESSAO = ?""", (id_sessao,))
     titulo_filme, sala, data_sessao, horario = cursor.fetchone()
     cursor.close()
 
     data_formatada = data_sessao.strftime('%d-%m-%Y')
-
-    with open(caminho_qr_completo, "rb") as image_file:
-        qr_base64 = base64.b64encode(image_file.read()).decode('utf-8')
 
 
     # Monta e envia o e-mail
@@ -1081,10 +1041,11 @@ def fazer_reserva():
       </body>
     </html>
     """
+
     mensagem = "Reserva realizada com sucesso!"
     erro_email = None
     try:
-        enviar_email_para(email, texto, caminho_qr_completo)
+        enviar_email_para(email, texto, mensagem, caminho_qr_completo)
     except Exception as e:
         mensagem = "Reserva feita com sucesso, mas falha ao enviar e-mail."
         erro_email = str(e)
@@ -1099,6 +1060,7 @@ def fazer_reserva():
         },
         'erro_email': erro_email
     }), 200
+
 
 @app.route('/reservas', methods=['GET'])
 def listar_reservas():
@@ -1254,6 +1216,28 @@ def listar_salas():
         'salas': salas_listadas
     }), 200
 
+@app.route('/buscar-filmes', methods=['GET'])
+def buscar_filmes():
+    termo = request.args.get('termo', '')
+
+    try:
+        cur = con.cursor()
+        # Busca case-insensitive usando LOWER
+        cur.execute("""
+            SELECT id_filme, titulo 
+            FROM filmes 
+            WHERE LOWER(titulo) LIKE LOWER(?)
+        """, ('%' + termo + '%',))
+        resultados = cur.fetchall()
+        cur.close()
+
+        # Montar resposta em JSON
+        filmes = [{'id': row[0], 'titulo': row[1]} for row in resultados]
+        return jsonify(filmes), 200
+
+    except Exception as e:
+        return jsonify({'erro': f'Erro na busca: {str(e)}'}), 500
+
 
 def calcula_crc16(payload):
     crc16 = crcmod.mkCrcFun(0x11021, initCrc=0xFFFF, rev=False)
@@ -1347,47 +1331,179 @@ def gerar_pix():
         return jsonify({"erro": f"Ocorreu um erro internosse: {str(e)}"}), 500
 
 
-
-
-
-# Função para checar se o usuário é um administrador
 def administrador_required(f):
     @wraps(f)
     def decorator(*args, **kwargs):
-        # Lógica para verificar se o usuário tem permissão de administrador
-        # Supondo que você tenha uma função `is_admin` que retorna se o usuário é admin
         if not is_admin():
             return jsonify({'erro': 'Acesso restrito a administradores'}), 403
         return f(*args, **kwargs)
     return decorator
 
-# Função que verifica se o usuário é administrador (essa parte pode variar)
 def is_admin():
-    # Lógica para verificar se o usuário é administrador
-    # Por exemplo, verificar um campo no banco de dados ou validar o token
-    return True  # Simulando que o usuário é admin
+    return True
 
-@app.route('/configurar-pix', methods=['POST'])
+@app.route('/configurar-pix', methods=['GET', 'POST'])
 @administrador_required
 def configurar_pix():
+    if request.method == 'GET':
+        try:
+            cur = con.cursor()
+            cur.execute("SELECT RAZAO_SOCIAL, NOME_FANTASIA, CHAVE_PIX, CIDADE FROM CONFIG_CINE WHERE id_config = 1")
+            row = cur.fetchone()
+            cur.close()
+
+            return jsonify({
+                "usuarios": {
+                    "razao_social": row[0],
+                    "nome_fantasia": row[1],
+                    "chave_pix": row[2],
+                    "cidade": row[3]
+                }
+            }), 200
+        except Exception as e:
+            return jsonify({'error': str(e)}), 500
+
+    if request.method == 'POST':
+        dados = request.get_json(force=True)
+
+        razao_social = dados.get('razao_social')
+        nome_fantasia = dados.get('nome_fantasia')
+        chave_pix = dados.get('chave_pix')
+        cidade = dados.get('cidade')
+
+        try:
+            cur = con.cursor()
+            cur.execute("""
+                UPDATE CONFIG_CINE
+                SET RAZAO_SOCIAL = ?, NOME_FANTASIA = ?, CHAVE_PIX = ?, CIDADE = ?
+                WHERE id_config = 1
+            """, (razao_social, nome_fantasia, chave_pix, cidade))
+            con.commit()
+            cur.close()
+
+            return jsonify({
+                'mensagem': 'Dados de PIX atualizados com sucesso!',
+                'razao_social': razao_social,
+                'nome_fantasia': nome_fantasia,
+                'chave_pix': chave_pix,
+                'cidade': cidade
+            }), 200
+
+        except Exception as e:
+            return jsonify({'erro': f'Erro ao atualizar os dados: {str(e)}'}), 500
+def conectar():
+    try:
+        con = fdb.connect(
+            host='localhost',  # ou o IP do seu servidor Firebird
+            database=r'D:\API-gestaocinema\Banco\BANCO.FDB',  # caminho do seu banco de dados
+            user='sysdba',
+            password='sysdba',
+            port=3050  # ou a porta que você estiver utilizando
+        )
+        print("Conexão estabelecida com sucesso!")
+        return con
+    except Exception as e:
+        print(f"Erro ao conectar ao banco: {e}")
+        return None
+
+
+@app.route('/avaliar', methods=['POST'])
+def avaliar_filme():
     dados = request.get_json()
 
-    razao_social = dados.get('razao_social')
-    nome_fantasia = dados.get('nome_fantasia')
-    chave_pix = dados.get('chave_pix')
-    cidade = dados.get('cidade')
+    id_usuario = dados.get('id_usuario')
+    id_filme = dados.get('id_filme')
+    nota = dados.get('nota')
+
+    if not all([id_usuario, id_filme, nota]):
+        return jsonify({"erro": "Faltam dados"}), 400
 
     try:
-        cur = con.cursor()
-        cur.execute("""UPDATE CONFIG_CINE SET RAZAO_SOCIAL = ?, NOME_FANTASIA = ?, CHAVE_PIX = ?, CIDADE = ?""",
-                    (razao_social, nome_fantasia, chave_pix, cidade))
-        con.commit()
-        cur.close()
 
-        return jsonify({'mensagem': 'Dados de PIX atualizados com sucesso!'}), 200
+        cur = con.cursor()
+
+        sql = """INSERT INTO avaliacoes (id_usuario, id_filme, nota, data_avaliacao) VALUES (?, ?, ?, ?)"""
+        cur.execute(sql, (id_usuario, id_filme, nota, date.today()))
+        con.commit()
+
+        # Retornando sucesso
+        return jsonify({
+            "mensagem": "Avaliação salva com sucesso",
+            "id_usuario": id_usuario,
+            "id_filme": id_filme,
+            "nota": nota
+
+            }), 201
 
     except Exception as e:
-        return jsonify({'erro': f'Erro ao atualizar os dados: {str(e)}'}), 500
+        return jsonify({"erro": str(e)}), 500
+
+    finally:
+        if cur:
+            cur.close()
+
+
+@app.route('/painel-admin', methods=['GET'])
+def painel_admin():
+    cur = con.cursor()
+
+    # Total arrecadado
+    cur.execute("SELECT SUM(valor_total) FROM reserva")
+    total_arrecadado = cur.fetchone()[0]
+    if total_arrecadado is None:
+        total_arrecadado = 0
+
+    # Vendas por sessão (nome do filme, horário da sessão, total de ingressos)
+    cur.execute("""
+        SELECT f.titulo, s.horario, COUNT(ar.id_reserva) AS ingressos
+        FROM sessoes s
+        JOIN filmes f ON s.id_filme = f.id_filme
+        LEFT JOIN assentos_reservados ar ON s.id_sessao = ar.id_sessao
+        GROUP BY f.titulo, s.horario
+    """)
+    sessoes = cur.fetchall()
+
+    vendas_lista = []
+    for sessao in sessoes:
+        vendas_lista.append({
+            'nome': sessao[0],
+            'sessao': sessao[1],
+            'ingressos': sessao[2]
+        })
+
+    # Filmes com maior bilheteira
+    cur.execute("""
+        SELECT f.titulo, SUM(r.valor_total) AS bilheteira_total
+        FROM reserva r
+        JOIN sessoes s ON r.id_sessao = s.id_sessao
+        JOIN filmes f ON s.id_filme = f.id_filme
+        GROUP BY f.titulo
+        ORDER BY bilheteira_total DESC
+        LIMIT 3
+    """)
+    filmes_bilheteira = cur.fetchall()
+
+    filmes_lista = []
+    for filme in filmes_bilheteira:
+        filmes_lista.append({
+            'titulo': filme[0],
+            'bilheteira_total': filme[1]
+        })
+
+    cur.close()
+
+    return jsonify({
+        'mensagem': "Painel Administrativo",
+        'total_arrecadado': total_arrecadado,
+        'vendas_por_sessao': vendas_lista,
+        'filmes_mais_bilheteira': filmes_lista
+    })
+
+
+
+
+
+
 
 if __name__ == '__main__':
     app.run(debug=True)
