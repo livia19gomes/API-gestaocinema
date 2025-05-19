@@ -25,6 +25,8 @@ from functools import wraps
 import fdb
 from datetime import date
 import random
+from werkzeug.security import generate_password_hash
+
 
 app = Flask(__name__)
 CORS(app, origins=["*"])
@@ -460,6 +462,28 @@ def verificar_codigo():
     del codigos_temp[email]  # remove para evitar reuso
     return jsonify({"message": "Código verificado com sucesso."})
 
+@app.route('/redefinir-senha', methods=['POST'])
+def redefinir_senha():
+    data = request.get_json()
+    email = data.get('email')
+    nova_senha = data.get('nova_senha')
+
+    if not email or not nova_senha:
+        return jsonify({"error": "Informe o email e a nova senha."}), 400
+
+    senha_hash = generate_password_hash(nova_senha)  # ✅ Usa hash compatível com login
+
+    cur = con.cursor()
+    cur.execute("SELECT id_cadastro FROM cadastros WHERE email = ?", (email,))
+    if not cur.fetchone():
+        cur.close()
+        return jsonify({"error": "Email não encontrado."}), 404
+
+    cur.execute("UPDATE cadastros SET senha = ? WHERE email = ?", (senha_hash, email))
+    con.commit()
+    cur.close()
+
+    return jsonify({"message": "Senha redefinida com sucesso."})
 
 @app.route('/filme_imagem', methods=['POST'])
 def cadastar_filme_imagem():
