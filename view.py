@@ -1089,7 +1089,7 @@ def fazer_reserva():
 @app.route('/reservas', methods=['GET'])
 def listar_reservas():
 
- # Autenticação via token
+    # Autenticação via token
     token = request.headers.get('Authorization')
     if not token:
         return jsonify({'mensagem': 'Token de autenticação necessário'}), 401
@@ -1107,32 +1107,29 @@ def listar_reservas():
     # Consulta ao banco de dados
     cur = con.cursor()
 
-    # Obter todas as reservas, juntando as tabelas RESERVA, SESSOES e FILMES
+    # Obter todas as reservas, juntando as tabelas RESERVA, SESSOES, FILMES e SALAS, incluindo valor_total
     cur.execute("""
-        SELECT r.ID_RESERVA, f.TITULO, s.DATA_SESSAO, s.HORARIO, sa.DESCRICAO, r.STATUS
+        SELECT r.ID_RESERVA, f.TITULO, s.DATA_SESSAO, s.HORARIO, sa.DESCRICAO, r.STATUS, r.VALOR_TOTAL
         FROM RESERVA r
         JOIN SESSOES s ON r.ID_SESSAO = s.ID_SESSAO
         JOIN FILMES f ON s.ID_FILME = f.ID_FILME
         JOIN SALAS sa ON s.ID_SALA = sa.ID_SALAS
-        where r.id_cadastro = ? 
+        WHERE r.id_cadastro = ?
     """, (id_cadastro, ))
 
     reservas = cur.fetchall()
-    cur.close()
 
-    # Formatar as reservas para um formato mais legível
     reservas_formatadas = []
 
     for reserva in reservas:
-        id_reserva, titulo_filme, data_sessao, horario, sala, status = reserva
+        id_reserva, titulo_filme, data_sessao, horario, sala, status, valor_total = reserva
 
-    # Buscar os assentos dessa reserva
+        # Buscar os assentos dessa reserva
         cur.execute("SELECT ID_ASSENTO FROM ASSENTOS_RESERVADOS WHERE ID_RESERVA = ?", (id_reserva,))
         assentos_raw = cur.fetchall()
         assentos = [row[0] for row in assentos_raw]
 
-
-        # Convertendo o horário para string, caso seja do tipo time
+        # Converter horário para string, se necessário
         if isinstance(horario, time):
             horario = horario.strftime('%H:%M:%S')
 
@@ -1143,10 +1140,12 @@ def listar_reservas():
             "horario": horario,
             "sala": sala,
             "status": status,
-            "assentos":assentos
+            "assentos": assentos,
+            "valor_total": float(valor_total)
         })
 
-    # Retorna os dados como JSON
+    cur.close()
+
     return jsonify(reservas=reservas_formatadas)
 
 @app.route('/assentos_reservados/<int:id_sessao>', methods=['GET'])
@@ -1354,6 +1353,79 @@ def gerar_pix():
     except Exception as e:
         return jsonify({"erro": f"Ocorreu um erro internosse: {str(e)}"}), 500
 
+@app.route('/pix_qrcode/<int:id_reserva>', methods=['GET'])
+def gerar_pix_por_reserva(id_reserva):
+    try:
+        # 1. Buscar valor total da reserva
+        cursor = con.cursor()
+        cursor.execute("SELECT VALOR_TOTAL FROM RESERVA WHERE ID_RESERVA = ?", (id_reserva,))
+        resultado_reserva = cursor.fetchone()
+        cursor.close()
+
+        if not resultado_reserva:
+            return jsonify({"erro": "Reserva não encontrada"}), 404
+
+        valor = f"{float(resultado_reserva[0]):.2f}"
+
+        # 2. Buscar dados do cinema (configuração PIX)
+        cursor = con.cursor()
+        cursor.execute("SELECT RAZAO_SOCIAL, CHAVE_PIX, CIDADE FROM CONFIG_CINE")
+        resultado = cursor.fetchone()
+        cursor.close()
+
+        if not resultado:
+            return jsonify({"erro": "Dados de PIX não configurados"}), 500
+
+        nome, chave_pix, cidade = resultado
+        nome = nome[:25] if nome else "Recebedor PIX"
+        cidade = cidade[:15] if cidade else "Cidade"
+
+        # 3. Montar o payload do QR Code
+        merchant_account_info = (
+            format_tlv("00", "br.gov.bcb.pix") +
+            format_tlv("01", chave_pix)
+        )
+        campo_26 = format_tlv("26", merchant_account_info)
+
+        payload_sem_crc = (
+            "000201" +
+            "010212" +
+            campo_26 +
+            "52040000" +
+            "5303986" +
+            format_tlv("54", valor) +
+            "5802BR" +
+            format_tlv("59", nome) +
+            format_tlv("60", cidade) +
+            format_tlv("62", format_tlv("05", f"RES{id_reserva}")) +
+            "6304"
+        )
+
+        crc = calcula_crc16(payload_sem_crc)
+        payload_completo = payload_sem_crc + crc
+
+        # 4. Gerar imagem do QR Code
+        qr_obj = qrcode.QRCode(
+            version=None,
+            error_correction=ERROR_CORRECT_H,
+            box_size=10,
+            border=4
+        )
+        qr_obj.add_data(payload_completo)
+        qr_obj.make(fit=True)
+        qr = qr_obj.make_image(fill_color="black", back_color="white")
+
+        pasta_qrcodes = os.path.join(os.getcwd(), "upload", "qrcodes")
+        os.makedirs(pasta_qrcodes, exist_ok=True)
+
+        nome_arquivo = f"pix_reserva_{id_reserva}.png"
+        caminho_arquivo = os.path.join(pasta_qrcodes, nome_arquivo)
+        qr.save(caminho_arquivo)
+
+        return send_file(caminho_arquivo, mimetype='image/png', as_attachment=True, download_name=nome_arquivo)
+
+    except Exception as e:
+        return jsonify({"erro": f"Erro ao gerar QR Code PIX: {str(e)}"}), 500
 
 def administrador_required(f):
     @wraps(f)
@@ -1466,6 +1538,39 @@ def avaliar_filme():
         if cur:
             cur.close()
 
+@app.route('/avaliacoes/media', methods=['GET'])
+def media_avaliacoes():
+    try:
+        cur = con.cursor()
+
+        sql = """
+            SELECT f.ID_FILME, f.TITULO, ROUND(AVG(a.nota), 2) AS media_avaliacoes
+            FROM avaliacoes a
+            JOIN filmes f ON a.id_filme = f.id_filme
+            GROUP BY f.id_filme, f.titulo
+        """
+        cur.execute(sql)
+        resultados = cur.fetchall()
+
+        if not resultados:
+            return jsonify({"mensagem": "Nenhuma avaliação encontrada."}), 404
+
+        filmes_avaliados = []
+        for linha in resultados:
+            filmes_avaliados.append({
+                "id_filme": linha[0],
+                "titulo": linha[1],
+                "media_avaliacoes": linha[2]
+            })
+
+        return jsonify(filmes_avaliados)
+
+    except Exception as e:
+        return jsonify({"erro": str(e)}), 500
+
+    finally:
+        if cur:
+            cur.close()
 
 @app.route('/painel-admin', methods=['GET'])
 def painel_admin():
