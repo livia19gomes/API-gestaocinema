@@ -436,17 +436,21 @@ def esqueci_minha_senha():
     enviar_email_para(email, corpo_html, assunto="Código de Recuperação - PrimeCine")
     return jsonify({"message": "Código enviado para o e-mail."})
 
-# Endpoint: Verificar código enviado
+
 @app.route('/verificar-codigo', methods=['POST'])
 def verificar_codigo():
     data = request.get_json()
     email = data.get('email')
     codigo_recebido = data.get('codigo')
 
+    print(f"Verificando código para email: {email}, código recebido: {codigo_recebido}")
+
     if not email or not codigo_recebido:
         return jsonify({"error": "Informe o email e o código."}), 400
 
     codigo_salvo, validade = codigos_temp.get(email, (None, None))
+
+    print(f"Código salvo: {codigo_salvo}, validade: {validade}")
 
     if not codigo_salvo:
         return jsonify({"error": "Nenhum código encontrado para este e-mail."}), 404
@@ -461,6 +465,7 @@ def verificar_codigo():
     # Código está válido
     del codigos_temp[email]  # remove para evitar reuso
     return jsonify({"message": "Código verificado com sucesso."})
+
 
 @app.route('/redefinir-senha', methods=['POST'])
 def redefinir_senha():
@@ -809,7 +814,7 @@ def editar_sessao(id):
     cur = con.cursor()
 
     # Busca a sessão pelo id
-    cur.execute("SELECT id_sessao, id_sala, horario, data_sessao, id_filme FROM sessoes WHERE id_sessao =?", (id,))
+    cur.execute("SELECT id_sessao, id_sala, horario, data_sessao, id_filme, valor_unitario FROM sessoes WHERE id_sessao =?", (id,))
     sessao_data = cur.fetchone()
 
     if not sessao_data:
@@ -822,10 +827,11 @@ def editar_sessao(id):
     horario = data.get('horario', sessao_data[2])
     data_sessao = data.get('data_sessao', sessao_data[3])
     id_filme = data.get('id_filme', sessao_data[4])
+    valor_unitario = data.get('valor_unitario', sessao_data[5])
 
     # Atualiza os dados da sessão
-    cur.execute("""UPDATE sessoes SET id_sala = ?, horario = ?, data_sessao = ?, id_filme = ? WHERE id_sessao = ?""",
-                (id_sala, horario, data_sessao, id_filme, id))
+    cur.execute("""UPDATE sessoes SET id_sala = ?, horario = ?, data_sessao = ?, id_filme = ?, valor_unitario = ? WHERE id_sessao = ?""",
+                (id_sala, horario, data_sessao, id_filme, valor_unitario, id))
 
     con.commit()
     cur.close()
@@ -837,7 +843,8 @@ def editar_sessao(id):
             'id_sala': id_sala,
             'horario': horario,
             'data_sessao': data_sessao,
-            'id_filme': id_filme
+            'id_filme': id_filme,
+            'valor_unitario': valor_unitario
         }
     })
 
@@ -995,7 +1002,7 @@ def fazer_reserva():
     # Gerar o QR Code imagem
     qr = qrcode.make(codigo_pix)
     nome_arquivo_qr = f"pix_reserva_{id_reserva}.png"
-    caminho_qr = os.path.join(os.getcwd(), "upload", "qrcodes")
+    caminho_qr = os.path.join(os.getcwd(), "static", "upload", "qrcodes")
     os.makedirs(caminho_qr, exist_ok=True)
     caminho_qr_completo = os.path.join(caminho_qr, nome_arquivo_qr)
     qr.save(caminho_qr_completo)
@@ -1247,15 +1254,22 @@ def buscar_filmes():
         cur = con.cursor()
         # Busca case-insensitive usando LOWER
         cur.execute("""
-            SELECT id_filme, titulo 
+            SELECT id_filme, titulo, sinopse, classificacao
             FROM filmes 
             WHERE LOWER(titulo) LIKE LOWER(?)
         """, ('%' + termo + '%',))
         resultados = cur.fetchall()
         cur.close()
 
-        # Montar resposta em JSON
-        filmes = [{'id': row[0], 'titulo': row[1]} for row in resultados]
+        # Montar resposta em JSON incluindo sinopse e classificacao
+        filmes = [
+            {
+                'id': row[0],
+                'titulo': row[1],
+                'sinopse': row[2],
+                'classificacao': row[3]
+            } for row in resultados
+        ]
         return jsonify(filmes), 200
 
     except Exception as e:
@@ -1328,7 +1342,7 @@ def gerar_pix():
         qr = qr_obj.make_image(fill_color="black", back_color="white")
 
         # Cria a pasta 'upload/qrcodes' relativa ao diretório do projeto
-        pasta_qrcodes = os.path.join(os.getcwd(), "upload", "qrcodes")
+        pasta_qrcodes = os.path.join(os.getcwd(), "static", "upload", "qrcodes")
         os.makedirs(pasta_qrcodes, exist_ok=True)
 
         # Conta quantos arquivos já existem com padrão 'pix_*.png'
@@ -1415,7 +1429,7 @@ def gerar_pix_por_reserva(id_reserva):
         qr_obj.make(fit=True)
         qr = qr_obj.make_image(fill_color="black", back_color="white")
 
-        pasta_qrcodes = os.path.join(os.getcwd(), "upload", "qrcodes")
+        pasta_qrcodes = os.path.join(os.getcwd(), "static", "upload", "qrcodes")
         os.makedirs(pasta_qrcodes, exist_ok=True)
 
         nome_arquivo = f"pix_reserva_{id_reserva}.png"
@@ -1460,14 +1474,21 @@ def configurar_pix():
             return jsonify({'error': str(e)}), 500
 
     if request.method == 'POST':
-        dados = request.get_json(force=True)
-
-        razao_social = dados.get('razao_social')
-        nome_fantasia = dados.get('nome_fantasia')
-        chave_pix = dados.get('chave_pix')
-        cidade = dados.get('cidade')
-
         try:
+            dados = request.get_json()
+            print("DEBUG - JSON recebido:", dados)
+
+            if not dados:
+                return jsonify({'erro': 'JSON inválido ou ausente'}), 400
+
+            razao_social = dados.get('razao_social')
+            nome_fantasia = dados.get('nome_fantasia')
+            chave_pix = dados.get('chave_pix')
+            cidade = dados.get('cidade')
+
+            if any(x is None for x in [razao_social, nome_fantasia, chave_pix, cidade]):
+                return jsonify({'erro': 'Todos os campos são obrigatórios'}), 400
+
             cur = con.cursor()
             cur.execute("""
                 UPDATE CONFIG_CINE
@@ -1486,7 +1507,10 @@ def configurar_pix():
             }), 200
 
         except Exception as e:
+            print("ERRO INTERNO:", str(e))
             return jsonify({'erro': f'Erro ao atualizar os dados: {str(e)}'}), 500
+
+
 def conectar():
     try:
         con = fdb.connect(
@@ -1506,30 +1530,29 @@ def conectar():
 @app.route('/avaliar', methods=['POST'])
 def avaliar_filme():
     dados = request.get_json()
+    print("DEBUG dados recebidos:", dados)  # 👈 Adicione isso
 
     id_usuario = dados.get('id_usuario')
     id_filme = dados.get('id_filme')
     nota = dados.get('nota')
 
-    if not all([id_usuario, id_filme, nota]):
+    if id_usuario is None or id_filme is None or nota is None:
         return jsonify({"erro": "Faltam dados"}), 400
 
-    try:
 
+    try:
         cur = con.cursor()
 
         sql = """INSERT INTO avaliacoes (id_usuario, id_filme, nota, data_avaliacao) VALUES (?, ?, ?, ?)"""
         cur.execute(sql, (id_usuario, id_filme, nota, date.today()))
         con.commit()
 
-        # Retornando sucesso
         return jsonify({
             "mensagem": "Avaliação salva com sucesso",
             "id_usuario": id_usuario,
             "id_filme": id_filme,
             "nota": nota
-
-            }), 201
+        }), 201
 
     except Exception as e:
         return jsonify({"erro": str(e)}), 500
@@ -1544,7 +1567,7 @@ def media_avaliacoes():
         cur = con.cursor()
 
         sql = """
-            SELECT f.ID_FILME, f.TITULO, ROUND(AVG(a.nota), 2) AS media_avaliacoes
+            SELECT f.ID_FILME, f.TITULO, AVG(CAST(a.nota AS FLOAT)) AS media_avaliacoes
             FROM avaliacoes a
             JOIN filmes f ON a.id_filme = f.id_filme
             GROUP BY f.id_filme, f.titulo
@@ -1560,7 +1583,7 @@ def media_avaliacoes():
             filmes_avaliados.append({
                 "id_filme": linha[0],
                 "titulo": linha[1],
-                "media_avaliacoes": linha[2]
+                "media_avaliacoes": round(float(linha[2]), 2)
             })
 
         return jsonify(filmes_avaliados)
@@ -1572,62 +1595,137 @@ def media_avaliacoes():
         if cur:
             cur.close()
 
-@app.route('/painel-admin', methods=['GET'])
+@app.route('/painel-admin', methods=['POST'])
 def painel_admin():
+    dados = request.get_json(silent=True) or {}
+
+    data_inicial = dados.get('data_inicial')
+    data_final = dados.get('data_final')
+
     cur = con.cursor()
 
-    # Total arrecadado
-    cur.execute("SELECT SUM(valor_total) FROM reserva")
-    total_arrecadado = cur.fetchone()[0]
-    if total_arrecadado is None:
-        total_arrecadado = 0
+    # Total arrecadado com filtro opcional de datas
+    if data_inicial and data_final:
+        cur.execute("""
+            SELECT r.VALOR_TOTAL
+            FROM SESSOES s
+            LEFT JOIN RESERVA r ON r.ID_SESSAO = s.ID_SESSAO 
+            WHERE s.DATA_SESSAO BETWEEN ? AND ?
+        """, (data_inicial, data_final))
+    else:
+        cur.execute("""
+            SELECT r.VALOR_TOTAL
+            FROM SESSOES s
+            LEFT JOIN RESERVA r ON r.ID_SESSAO = s.ID_SESSAO
+        """)
 
-    # Vendas por sessão (nome do filme, horário da sessão, total de ingressos)
-    cur.execute("""
-        SELECT f.titulo, s.horario, COUNT(ar.id_reserva) AS ingressos
-        FROM sessoes s
-        JOIN filmes f ON s.id_filme = f.id_filme
-        LEFT JOIN assentos_reservados ar ON s.id_sessao = ar.id_sessao
-        GROUP BY f.titulo, s.horario
-    """)
+    total_arrecadado = 0
+    for row in cur.fetchall():
+        valor = row[0]
+        if valor is not None:
+            total_arrecadado += float(valor)
+
+    # Vendas por sessão com filtro opcional de datas
+    if data_inicial and data_final:
+        cur.execute("""
+            SELECT f.titulo, s.DATA_SESSAO, s.horario, COUNT(ar.id_reserva) AS ingressos
+            FROM sessoes s
+            LEFT JOIN filmes f ON s.id_filme = f.id_filme
+            LEFT JOIN RESERVA r ON r.ID_SESSAO = s.ID_SESSAO 
+            LEFT JOIN assentos_reservados ar ON ar.ID_RESERVA = r.ID_RESERVA 
+            WHERE s.DATA_SESSAO BETWEEN ? AND ?
+            GROUP BY f.titulo, s.DATA_SESSAO, s.horario
+            HAVING COUNT(ar.id_reserva) > 0
+            ORDER BY ingressos DESC
+        """, (data_inicial, data_final))
+    else:
+        cur.execute("""
+            SELECT f.titulo, s.DATA_SESSAO, s.horario, COUNT(ar.id_reserva) AS ingressos
+            FROM sessoes s
+            LEFT JOIN filmes f ON s.id_filme = f.id_filme
+            LEFT JOIN RESERVA r ON r.ID_SESSAO = s.ID_SESSAO 
+            LEFT JOIN assentos_reservados ar ON ar.ID_RESERVA = r.ID_RESERVA 
+            GROUP BY f.titulo, s.DATA_SESSAO, s.horario
+            HAVING COUNT(ar.id_reserva) > 0
+            ORDER BY ingressos DESC
+        """)
+
     sessoes = cur.fetchall()
 
     vendas_lista = []
     for sessao in sessoes:
         vendas_lista.append({
             'nome': sessao[0],
-            'sessao': sessao[1],
-            'ingressos': sessao[2]
+            'data': str(sessao[1]),
+            'horario': str(sessao[2]),
+            'ingressos': sessao[3]
         })
 
-    # Filmes com maior bilheteira
-    cur.execute("""
-        SELECT f.titulo, SUM(r.valor_total) AS bilheteira_total
-        FROM reserva r
-        JOIN sessoes s ON r.id_sessao = s.id_sessao
-        JOIN filmes f ON s.id_filme = f.id_filme
-        GROUP BY f.titulo
-        ORDER BY bilheteira_total DESC
-        LIMIT 3
-    """)
-    filmes_bilheteira = cur.fetchall()
+    # Filmes com maior bilheteira com filtro opcional de datas
+    if data_inicial and data_final:
+        cur.execute("""
+            SELECT f.titulo, r.valor_total
+            FROM reserva r
+            JOIN sessoes s ON r.id_sessao = s.id_sessao
+            JOIN filmes f ON s.id_filme = f.id_filme
+            WHERE s.DATA_SESSAO BETWEEN ? AND ?
+        """, (data_inicial, data_final))
+    else:
+        cur.execute("""
+            SELECT f.titulo, r.valor_total
+            FROM reserva r
+            JOIN sessoes s ON r.id_sessao = s.id_sessao
+            JOIN filmes f ON s.id_filme = f.id_filme
+        """)
+
+    filmes_raw = cur.fetchall()
+
+    bilheteira_por_filme = {}
+    for titulo, valor in filmes_raw:
+        if titulo not in bilheteira_por_filme:
+            bilheteira_por_filme[titulo] = 0
+        if valor is not None:
+            bilheteira_por_filme[titulo] += float(valor)
+
+    filmes_ordenados = sorted(
+        bilheteira_por_filme.items(),
+        key=lambda x: x[1],
+        reverse=True
+    )[:3]
 
     filmes_lista = []
-    for filme in filmes_bilheteira:
+    for titulo, total in filmes_ordenados:
         filmes_lista.append({
-            'titulo': filme[0],
-            'bilheteira_total': filme[1]
+            'titulo': titulo,
+            'bilheteira_total': total
         })
 
-    cur.close()
+    # Contagem de ingressos vendidos com filtro opcional de datas
+    if data_inicial and data_final:
+        cur.execute("""
+            SELECT COUNT(ar.id_assento)
+            FROM sessoes s
+            LEFT JOIN reserva r ON r.id_sessao = s.id_sessao
+            LEFT JOIN assentos_reservados ar ON ar.id_reserva = r.id_reserva
+            WHERE s.DATA_SESSAO BETWEEN ? AND ?
+        """, (data_inicial, data_final))
+    else:
+        cur.execute("""
+            SELECT COUNT(ar.id_assento)
+            FROM sessoes s
+            LEFT JOIN reserva r ON r.id_sessao = s.id_sessao
+            LEFT JOIN assentos_reservados ar ON ar.id_reserva = r.id_reserva
+        """)
+
+    ingressos_vendidos = cur.fetchone()[0] or 0
 
     return jsonify({
         'mensagem': "Painel Administrativo",
         'total_arrecadado': total_arrecadado,
+        'ingressos_vendidos': ingressos_vendidos,
         'vendas_por_sessao': vendas_lista,
         'filmes_mais_bilheteira': filmes_lista
     })
-
 
 
 if __name__ == '__main__':
