@@ -841,8 +841,9 @@ def editar_sessao(id):
         'sessao': {
             'id_sessao': id,
             'id_sala': id_sala,
-            'horario': horario,
-            'data_sessao': data_sessao,
+            'horario': horario.strftime('%H:%M:%S') if isinstance(horario, time) else horario,
+            'data_sessao': data_sessao.strftime('%Y-%m-%d') if isinstance(data_sessao,
+                                                                          (date, datetime)) else data_sessao,
             'id_filme': id_filme,
             'valor_unitario': valor_unitario
         }
@@ -1727,6 +1728,104 @@ def painel_admin():
         'filmes_mais_bilheteira': filmes_lista
     })
 
+@app.route('/gerar_pdf_painel', methods=['GET'])
+def gerar_pdf_painel():
+    cursor = con.cursor()
+    cursor.execute("""
+        SELECT f.titulo, s.DATA_SESSAO, s.horario, COUNT(ar.id_reserva) AS ingressos
+          FROM sessoes s
+          LEFT JOIN filmes f ON s.id_filme = f.id_filme
+          LEFT JOIN RESERVA r ON r.ID_SESSAO = s.ID_SESSAO
+          LEFT JOIN assentos_reservados ar ON ar.ID_RESERVA = r.ID_RESERVA
+         GROUP BY f.titulo, s.DATA_SESSAO, s.horario
+        HAVING COUNT(ar.id_reserva) > 0
+         ORDER BY ingressos DESC
+    """)
+    sessoes = cursor.fetchall()
+    cursor.close()
+
+    pdf = FPDF()
+    pdf.set_auto_page_break(auto=True, margin=15)
+    pdf.add_page()
+
+    # Título
+    pdf.set_font("Arial", style='B', size=16)
+    pdf.cell(200, 10, "Relatório de Venda Por Sessão", ln=True, align='C')
+
+    pdf.ln(5)
+    pdf.line(10, pdf.get_y(), 200, pdf.get_y())
+    pdf.ln(10)
+
+    # Cabeçalho da tabela
+    pdf.set_font("Arial", style='B', size=12)
+    pdf.set_fill_color(230, 230, 230)
+    pdf.cell(90, 10, "Título", border=1, align='C', fill=True)
+    pdf.cell(35, 10, "Data", border=1, align='C', fill=True)
+    pdf.cell(30, 10, "Horário", border=1, align='C', fill=True)
+    pdf.cell(35, 10, "Ingressos", border=1, align='C', fill=True)
+    pdf.ln()
+
+    # Linhas da tabela
+    pdf.set_font("Arial", size=12)
+    for sessao in sessoes:
+        titulo = str(sessao[0])
+        data = sessao[1].strftime("%d/%m/%Y") if hasattr(sessao[1], 'strftime') else str(sessao[1])
+        horario = str(sessao[2])
+        ingressos = str(sessao[3])
+
+        pdf.cell(90, 10, titulo, border=1)
+        pdf.cell(35, 10, data, border=1, align='C')
+        pdf.cell(30, 10, horario, border=1, align='C')
+        pdf.cell(35, 10, ingressos, border=1, align='C')
+        pdf.ln()
+
+    # Total de sessões
+    pdf.ln(10)
+    pdf.set_font("Arial", style='B', size=12)
+    pdf.cell(200, 10, f"Total de sessões com ingressos vendidos: {len(sessoes)}", ln=True, align='C')
+
+    # Salva PDF
+    pdf_path = "relatorio_venda_sessoes.pdf"
+    pdf.output(pdf_path)
+
+    cursor.execute("""
+        SELECT f.titulo, s.DATA_SESSAO, s.horario, COUNT(ar.id_reserva) AS ingressos
+          FROM sessoes s
+          LEFT JOIN filmes f ON s.id_filme = f.id_filme
+          LEFT JOIN RESERVA r ON r.ID_SESSAO = s.ID_SESSAO
+          LEFT JOIN assentos_reservados ar ON ar.ID_RESERVA = r.ID_RESERVA
+         GROUP BY f.titulo, s.DATA_SESSAO, s.horario
+        HAVING COUNT(ar.id_reserva) > 0
+         ORDER BY 4 DESC
+    """)
+
+    return send_file(pdf_path, as_attachment=True, mimetype='application/pdf')
+
+    livros = cursor.fetchall()
+    cursor.close()
+
+    pdf = FPDF()
+    pdf.set_auto_page_break(auto=True, margin=15)
+    pdf.add_page()
+    pdf.set_font("Arial", style='B', size=16)
+    pdf.cell(200, 10, "Relatorio de Livros", ln=True, align='C')
+
+    pdf.ln(5)  # Espaço entre o título e a linha
+    pdf.line(10, pdf.get_y(), 200, pdf.get_y())  # Linha abaixo do título
+    pdf.ln(5)  # Espaço após a linha
+    pdf.set_font("Arial", size=12)
+
+    for livro in livros:
+        pdf.cell(200, 10, f"Título: {livro[0]}  Data da Sessão: {livro[1]}  Horário: {livro[2]}  Quantidade de Ingressos: {livro[3]}", ln=True)
+
+    contador_livros = len(livros)
+    pdf.ln(10)  # Espaço antes do contador
+    pdf.set_font("Arial", style='B', size=12)
+    pdf.cell(200, 10, f"Total de livros cadastrados: {contador_livros}", ln=True, align='C')
+    pdf_path = "relatorio_livros.pdf"
+    pdf.output(pdf_path)
+
+    return send_file(pdf_path, as_attachment=True, mimetype='application/pdf')
 
 if __name__ == '__main__':
     app.run(debug=True)
