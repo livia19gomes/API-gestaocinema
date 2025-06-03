@@ -287,7 +287,7 @@ def atualizar_usuario(id):
         if cur.fetchone():
             return jsonify({"message": "Este usuário já foi cadastrado!"}), 400
 
-    senha = generate_password_hash(senha).decode('utf-8')
+    senha = generate_password_hash(senha)
 
     cur.execute("update cadastros set nome = ?, telefone = ?, email = ?, senha = ?, tipo = ?, ativo = ?  where id_cadastro = ?",
                 (nome, telefone, email, senha,tipo, ativo, id))
@@ -914,12 +914,12 @@ def fazer_reserva():
         cur.close()
         return jsonify({"error": f"Os assentos {reservados} já estão reservados"}), 400
 
-    # Cria a reserva principal
+    # Cria a reserva principal COM A DATA DA RESERVA
     cur.execute("""
-        INSERT INTO RESERVA (ID_SESSAO, ID_CADASTRO, STATUS)
-        VALUES (?, ?, ?)
+        INSERT INTO RESERVA (ID_SESSAO, ID_CADASTRO, STATUS, DATA_RESERVA)
+        VALUES (?, ?, ?, ?)
         RETURNING ID_RESERVA
-    """, (id_sessao, id_cadastro, 'Confirmada'))
+    """, (id_sessao, id_cadastro, 'Confirmada', date.today()))
     id_reserva = cur.fetchone()[0]
 
     # Relaciona os assentos com a reserva
@@ -1516,7 +1516,6 @@ def conectar():
 @app.route('/avaliar', methods=['POST'])
 def avaliar_filme():
     dados = request.get_json()
-    print("DEBUG dados recebidos:", dados)  # 👈 Adicione isso
 
     id_usuario = dados.get('id_usuario')
     id_filme = dados.get('id_filme')
@@ -1525,20 +1524,66 @@ def avaliar_filme():
     if id_usuario is None or id_filme is None or nota is None:
         return jsonify({"erro": "Faltam dados"}), 400
 
-
     try:
         cur = con.cursor()
 
-        sql = """INSERT INTO avaliacoes (id_usuario, id_filme, nota, data_avaliacao) VALUES (?, ?, ?, ?)"""
-        cur.execute(sql, (id_usuario, id_filme, nota, date.today()))
+        # Inserir a nova avaliação
+        sql_insert = """
+            INSERT INTO avaliacoes (id_usuario, id_filme, nota, data_avaliacao)
+            VALUES (?, ?, ?, ?)
+        """
+        cur.execute(sql_insert, (id_usuario, id_filme, nota, date.today()))
+        con.commit()
+
+        # Calcular nova média
+        sql_media = """
+            SELECT AVG(CAST(nota AS FLOAT)) FROM avaliacoes WHERE id_filme = ?
+        """
+        cur.execute(sql_media, (id_filme,))
+        media = cur.fetchone()[0]
+
+        # Atualizar o campo media_avaliacao na tabela filmes
+        sql_update = """
+            UPDATE filmes SET media_avaliacoes = ? WHERE id_filme = ?
+        """
+        cur.execute(sql_update, (media, id_filme))
         con.commit()
 
         return jsonify({
             "mensagem": "Avaliação salva com sucesso",
             "id_usuario": id_usuario,
             "id_filme": id_filme,
-            "nota": nota
+            "nota": nota,
+            "media_atualizada": round(float(media), 2)
         }), 201
+
+    except Exception as e:
+        return jsonify({"erro": str(e)}), 500
+
+    finally:
+        if cur:
+            cur.close()
+@app.route('/avaliacoes', methods=['GET'])
+def verificar_se_usuario_votou():
+    id_usuario = request.args.get('id_usuario')
+    id_filme = request.args.get('id_filme')
+
+    if not id_usuario or not id_filme:
+        return jsonify({"erro": "Parâmetros faltando"}), 400
+
+    try:
+        cur = con.cursor()
+        sql = """
+        SELECT nota FROM avaliacoes
+        WHERE id_usuario = ? AND id_filme = ?
+        """
+        cur.execute(sql, (id_usuario, id_filme))
+        resultado = cur.fetchone()
+
+        if resultado:
+            return jsonify({"voto": resultado[0]}), 200
+        else:
+            return jsonify({"mensagem": "Usuário ainda não votou"}), 404
 
     except Exception as e:
         return jsonify({"erro": str(e)}), 500
@@ -1581,6 +1626,7 @@ def media_avaliacoes():
         if cur:
             cur.close()
 
+
 @app.route('/painel-admin', methods=['POST'])
 def painel_admin():
     dados = request.get_json(silent=True) or {}
@@ -1588,120 +1634,71 @@ def painel_admin():
     data_inicial = dados.get('data_inicial')
     data_final = dados.get('data_final')
 
+    if not data_inicial or not data_final:
+        hoje = date.today().isoformat()
+        data_inicial = hoje
+        data_final = hoje
+
     cur = con.cursor()
 
-    # Total arrecadado com filtro opcional de datas
-    if data_inicial and data_final:
-        cur.execute("""
-            SELECT r.VALOR_TOTAL
-            FROM SESSOES s
-            LEFT JOIN RESERVA r ON r.ID_SESSAO = s.ID_SESSAO 
-            WHERE s.DATA_SESSAO BETWEEN ? AND ?
-        """, (data_inicial, data_final))
-    else:
-        cur.execute("""
-            SELECT r.VALOR_TOTAL
-            FROM SESSOES s
-            LEFT JOIN RESERVA r ON r.ID_SESSAO = s.ID_SESSAO
-        """)
+    # Total arrecadado com base na data_reserva
+    cur.execute("""
+        SELECT r.VALOR_TOTAL
+        FROM SESSOES s
+        LEFT JOIN RESERVA r ON r.ID_SESSAO = s.ID_SESSAO
+        WHERE r.DATA_RESERVA BETWEEN ? AND ?
+    """, (data_inicial, data_final))
 
-    total_arrecadado = 0
-    for row in cur.fetchall():
-        valor = row[0]
-        if valor is not None:
-            total_arrecadado += float(valor)
+    total_arrecadado = sum(float(row[0]) for row in cur.fetchall() if row[0] is not None)
 
-    # Vendas por sessão com filtro opcional de datas
-    if data_inicial and data_final:
-        cur.execute("""
-            SELECT f.titulo, s.DATA_SESSAO, s.horario, COUNT(ar.id_reserva) AS ingressos
-            FROM sessoes s
-            LEFT JOIN filmes f ON s.id_filme = f.id_filme
-            LEFT JOIN RESERVA r ON r.ID_SESSAO = s.ID_SESSAO 
-            LEFT JOIN assentos_reservados ar ON ar.ID_RESERVA = r.ID_RESERVA 
-            WHERE s.DATA_SESSAO BETWEEN ? AND ?
-            GROUP BY f.titulo, s.DATA_SESSAO, s.horario
-            HAVING COUNT(ar.id_reserva) > 0
-            ORDER BY ingressos DESC
-        """, (data_inicial, data_final))
-    else:
-        cur.execute("""
-            SELECT f.titulo, s.DATA_SESSAO, s.horario, COUNT(ar.id_reserva) AS ingressos
-            FROM sessoes s
-            LEFT JOIN filmes f ON s.id_filme = f.id_filme
-            LEFT JOIN RESERVA r ON r.ID_SESSAO = s.ID_SESSAO 
-            LEFT JOIN assentos_reservados ar ON ar.ID_RESERVA = r.ID_RESERVA 
-            GROUP BY f.titulo, s.DATA_SESSAO, s.horario
-            HAVING COUNT(ar.id_reserva) > 0
-            ORDER BY ingressos DESC
-        """)
+    # Vendas por sessão
+    cur.execute("""
+        SELECT f.TITULO, s.DATA_SESSAO, s.HORARIO, COUNT(ar.ID_RESERVA) AS ingressos
+        FROM SESSOES s
+        LEFT JOIN FILMES f ON s.ID_FILME = f.ID_FILME
+        LEFT JOIN RESERVA r ON r.ID_SESSAO = s.ID_SESSAO
+        LEFT JOIN ASSENTOS_RESERVADOS ar ON ar.ID_RESERVA = r.ID_RESERVA
+        WHERE r.DATA_RESERVA BETWEEN ? AND ?
+        GROUP BY f.TITULO, s.DATA_SESSAO, s.HORARIO
+        HAVING COUNT(ar.ID_RESERVA) > 0
+        ORDER BY ingressos DESC
+    """, (data_inicial, data_final))
 
     sessoes = cur.fetchall()
+    vendas_lista = [{
+        'nome': s[0],
+        'data': str(s[1]),
+        'horario': str(s[2]),
+        'ingressos': s[3]
+    } for s in sessoes]
 
-    vendas_lista = []
-    for sessao in sessoes:
-        vendas_lista.append({
-            'nome': sessao[0],
-            'data': str(sessao[1]),
-            'horario': str(sessao[2]),
-            'ingressos': sessao[3]
-        })
-
-    # Filmes com maior bilheteira com filtro opcional de datas
-    if data_inicial and data_final:
-        cur.execute("""
-            SELECT f.titulo, r.valor_total
-            FROM reserva r
-            JOIN sessoes s ON r.id_sessao = s.id_sessao
-            JOIN filmes f ON s.id_filme = f.id_filme
-            WHERE s.DATA_SESSAO BETWEEN ? AND ?
-        """, (data_inicial, data_final))
-    else:
-        cur.execute("""
-            SELECT f.titulo, r.valor_total
-            FROM reserva r
-            JOIN sessoes s ON r.id_sessao = s.id_sessao
-            JOIN filmes f ON s.id_filme = f.id_filme
-        """)
-
-    filmes_raw = cur.fetchall()
+    # Filmes com maior bilheteira
+    cur.execute("""
+        SELECT f.TITULO, r.VALOR_TOTAL
+        FROM RESERVA r
+        JOIN SESSOES s ON r.ID_SESSAO = s.ID_SESSAO
+        JOIN FILMES f ON s.ID_FILME = f.ID_FILME
+        WHERE r.DATA_RESERVA BETWEEN ? AND ?
+    """, (data_inicial, data_final))
 
     bilheteira_por_filme = {}
-    for titulo, valor in filmes_raw:
-        if titulo not in bilheteira_por_filme:
-            bilheteira_por_filme[titulo] = 0
+    for titulo, valor in cur.fetchall():
         if valor is not None:
-            bilheteira_por_filme[titulo] += float(valor)
+            bilheteira_por_filme[titulo] = bilheteira_por_filme.get(titulo, 0) + float(valor)
 
-    filmes_ordenados = sorted(
-        bilheteira_por_filme.items(),
-        key=lambda x: x[1],
-        reverse=True
-    )[:3]
+    filmes_lista = [
+        {'titulo': titulo, 'bilheteira_total': total}
+        for titulo, total in sorted(bilheteira_por_filme.items(), key=lambda x: x[1], reverse=True)[:3]
+    ]
 
-    filmes_lista = []
-    for titulo, total in filmes_ordenados:
-        filmes_lista.append({
-            'titulo': titulo,
-            'bilheteira_total': total
-        })
-
-    # Contagem de ingressos vendidos com filtro opcional de datas
-    if data_inicial and data_final:
-        cur.execute("""
-            SELECT COUNT(ar.id_assento)
-            FROM sessoes s
-            LEFT JOIN reserva r ON r.id_sessao = s.id_sessao
-            LEFT JOIN assentos_reservados ar ON ar.id_reserva = r.id_reserva
-            WHERE s.DATA_SESSAO BETWEEN ? AND ?
-        """, (data_inicial, data_final))
-    else:
-        cur.execute("""
-            SELECT COUNT(ar.id_assento)
-            FROM sessoes s
-            LEFT JOIN reserva r ON r.id_sessao = s.id_sessao
-            LEFT JOIN assentos_reservados ar ON ar.id_reserva = r.id_reserva
-        """)
+    # Ingressos vendidos
+    cur.execute("""
+        SELECT COUNT(ar.ID_ASSENTO)
+        FROM SESSOES s
+        LEFT JOIN RESERVA r ON r.ID_SESSAO = s.ID_SESSAO
+        LEFT JOIN ASSENTOS_RESERVADOS ar ON ar.ID_RESERVA = r.ID_RESERVA
+        WHERE r.DATA_RESERVA BETWEEN ? AND ?
+    """, (data_inicial, data_final))
 
     ingressos_vendidos = cur.fetchone()[0] or 0
 
