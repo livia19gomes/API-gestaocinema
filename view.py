@@ -757,7 +757,7 @@ def listar_sessoes(id_filme):
                s.id_filme, 
                f.titulo, 
                s.valor_unitario,
-               s.valor_promocional,  -- adicionado aqui
+               s.valor_promocional,
                f.duracao
         FROM sessoes s 
         LEFT JOIN filmes f ON f.id_filme = s.id_filme
@@ -773,26 +773,20 @@ def listar_sessoes(id_filme):
         horario = sessao[3]
         data_sessao = sessao[4]
 
-        # Converte horário e data corretamente
         if isinstance(horario, str):
             horario = datetime.strptime(horario, "%H:%M:%S").time()
         if isinstance(data_sessao, str):
             data_sessao = datetime.strptime(data_sessao, "%Y-%m-%d").date()
 
-        # Junta data + hora e compara
         data_hora_sessao = datetime.combine(data_sessao, horario)
         if data_hora_sessao <= datetime.now():
-            continue  # pula sessões passadas
+            continue
 
-        valor_unitario = sessao[7]
-        valor_promocional = sessao[8]  # novo campo
-        duracao = sessao[9]
+        valor_unitario = float(sessao[7]) if sessao[7] is not None else 0.0
+        valor_promocional = float(sessao[8]) if sessao[8] is not None else None
+        duracao = int(sessao[9]) if sessao[9] is not None else 0
 
-        valor_unitario = float(valor_unitario) if valor_unitario is not None else 0.0
-        valor_promocional = float(valor_promocional) if valor_promocional is not None else None
-        duracao = int(duracao) if duracao is not None else 0
-
-        sessoes_dic.append({
+        sessao_dict = {
             'id_sessao': sessao[0],
             'id_sala': sessao[1],
             'descricao': sessao[2],
@@ -800,38 +794,122 @@ def listar_sessoes(id_filme):
             'data_sessao': data_sessao.strftime("%Y-%m-%d"),
             'id_filme': sessao[5],
             'titulo': sessao[6],
-            'valor_unitario': valor_unitario,
-            'valor_promocional': valor_promocional,
             'duracao': duracao
-        })
+        }
+
+        if valor_promocional:
+            sessao_dict['valor_promocional'] = valor_promocional
+        else:
+            sessao_dict['valor_unitario'] = valor_unitario
+
+        sessoes_dic.append(sessao_dict)
 
     cur.close()
+
+    # Esse return tem que ficar FORA do for
+    if not sessoes_dic:
+        return jsonify({
+            "mensagem": "Nenhuma sessão encontrada para este filme.",
+            "sessoes": []
+        })
 
     return jsonify({
         "mensagem": "Lista de sessões",
         "sessoes": sessoes_dic
     })
 
-@app.route('/sessoes/promocoes', methods=['GET'])
+
+@app.route('/promocao', methods=['PUT'])
+def adicionar_promocao():
+    dados = request.get_json()
+
+    id_sessao = dados.get('id_sessao')
+    valor_promocional = dados.get('valor_promocional')
+
+    if id_sessao is None or valor_promocional is None:
+        return jsonify({'erro': 'Campos obrigatórios: id_sessao e valor_promocional'}), 400
+
+    cur = con.cursor()
+
+    # Verifica se a sessão existe
+    cur.execute("SELECT ID_SESSAO FROM SESSOES WHERE ID_SESSAO = ?", (id_sessao,))
+    if not cur.fetchone():
+        cur.close()
+        return jsonify({'erro': 'Sessão não encontrada'}), 404
+
+    # Atualiza o valor promocional
+    cur.execute("""
+        UPDATE SESSOES
+        SET VALOR_PROMOCIONAL = ?
+        WHERE ID_SESSAO = ?
+    """, (valor_promocional, id_sessao))
+
+    con.commit()
+    cur.close()
+
+    return jsonify({
+        'mensagem': 'Promoção atualizada com sucesso!',
+        'id_sessao': id_sessao,
+        'valor_promocional': valor_promocional
+    }), 200
+
+@app.route('/promocao/<int:id_sessao>', methods=['DELETE'])
+def remover_promocao(id_sessao):
+    cur = con.cursor()
+
+    # Verifica se a sessão existe
+    cur.execute("SELECT ID_SESSAO FROM SESSOES WHERE ID_SESSAO = ?", (id_sessao,))
+    if not cur.fetchone():
+        cur.close()
+        return jsonify({'erro': 'Sessão não encontrada'}), 404
+
+    # Remove o valor promocional (define como NULL)
+    cur.execute("""
+        UPDATE SESSOES
+        SET VALOR_PROMOCIONAL = NULL
+        WHERE ID_SESSAO = ?
+    """, (id_sessao,))
+
+    con.commit()
+    cur.close()
+
+    return jsonify({
+        'mensagem': 'Promoção removida com sucesso!',
+        'id_sessao': id_sessao
+    }), 200
+
+
+@app.route('/promocao', methods=['GET'])
 def listar_promocoes():
     cur = con.cursor()
+
     cur.execute("""
-        SELECT titulo, valor_promocional, data_sessao, sala
-        FROM sessoes
-        WHERE valor_promocional IS NOT NULL
+        SELECT s.ID_SESSAO,
+               f.TITULO,
+               s.DATA_SESSAO,
+               s.HORARIO,
+               COALESCE(s.VALOR_PROMOCIONAL, 0) AS VALOR_PROMOCIONAL
+        FROM SESSOES s
+        JOIN FILMES f ON s.ID_FILME = f.ID_FILME
+        WHERE s.VALOR_PROMOCIONAL IS NOT NULL
+          AND s.DATA_SESSAO >= CURRENT_DATE
     """)
-    promocoes = [
-        {
-            "titulo": row[0],
-            "valor_promocional": row[1],
-            "data_sessao": row[2],
-            "sala": row[3]
-        }
-        for row in cur.fetchall()
-    ]
+
+    sessoes = cur.fetchall()
     cur.close()
-    con.close()
-    return jsonify(promocoes)
+
+    lista = [{
+        'id_sessao': s[0],
+        'filme': s[1],
+        'data': str(s[2]),
+        'horario': str(s[3]),
+        'valor_promocional': s[4]
+    } for s in sessoes]
+
+    return jsonify({
+        'mensagem': 'Sessões com promoção',
+        'sessoes_promocionais': lista
+    })
 
 
 @app.route('/sessoes/<int:id>', methods=['DELETE'])
@@ -932,7 +1010,16 @@ def fazer_reserva():
     con.commit()
 
     # 1. Buscar o valor unitário da sessão
-    cur.execute("SELECT COALESCE(valor_unitario,0) FROM sessoes WHERE id_sessao = ?", (id_sessao,))
+    cur.execute("""
+        SELECT 
+            CASE 
+                WHEN valor_promocional IS NOT NULL AND valor_promocional > 0 
+                THEN valor_promocional 
+                ELSE valor_unitario 
+            END 
+        FROM sessoes 
+        WHERE id_sessao = ?
+    """, (id_sessao,))
     resultado = cur.fetchone()
     cur.close()
 
