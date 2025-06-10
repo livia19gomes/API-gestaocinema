@@ -854,7 +854,7 @@ def adicionar_promocao():
     }), 200
 
 @app.route('/promocao/<int:id_sessao>', methods=['DELETE'])
-def remover_promocao(id_sessao):
+def deletar_promocao(id_sessao):
     cur = con.cursor()
 
     # Verifica se a sessão existe
