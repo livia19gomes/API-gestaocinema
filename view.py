@@ -48,10 +48,14 @@ def verificar_adm(id_cadastro):
     else:
         return False
 
+import unicodedata
+
 def normalizar_texto(texto):
-    if texto:
-        return unicodedata.normalize('NFC', texto)
-    return texto
+    if texto is None:
+        return ""
+    texto = str(texto)
+    return unicodedata.normalize('NFC', texto)
+
 
 def enviar_email_para(destinatario, corpo_html,  assunto="PrimeCine", caminho_anexo=None):
 
@@ -117,6 +121,9 @@ def validar_senha(senha):
         return jsonify({"error": "A senha deve conter pelo menos dois números"}), 400
 
     return True
+@app.route('/teste')
+def teste():
+    return 'OK'
 
 @app.route('/cadastros', methods=['GET'])
 def usuarios():
@@ -181,12 +188,12 @@ def cadastro_usuario():
 def deletar_Usuario(id):
     cur = con.cursor()
 
-    cur.execute("SELECT 1 FROM cadastros WHERE ID_USUARIO = ?", (id,))
+    cur.execute("SELECT 1 FROM cadastros WHERE id_cadastro = ?", (id,))
     if not cur.fetchone():
         cur.close()
         return jsonify({"error": "Usuario não encontrado"}), 404
 
-    cur.execute("DELETE FROM cadastros WHERE ID_USUARIO = ?", (id,))
+    cur.execute("DELETE FROM cadastros WHERE id_cadastro = ?", (id,))
     con.commit()
     cur.close()
 
@@ -194,6 +201,7 @@ def deletar_Usuario(id):
         'message': "Usuario excluído com sucesso!",
         'id_usuario': id
     })
+
 
 
 @app.route('/relatorio', methods=['GET'])
@@ -248,10 +256,6 @@ def criar_pdf():
     pdf_path = "relatorio_filmes.pdf"
     pdf.output(pdf_path)
     return send_file(pdf_path, as_attachment=True, mimetype='application/pdf')
-
-
-if __name__ == '__main__':
-    app.run(debug=True)
 
 
 @app.route('/cadastros/<int:id>', methods=['PUT'])
@@ -491,7 +495,7 @@ def redefinir_senha():
     return jsonify({"message": "Senha redefinida com sucesso."})
 
 @app.route('/filme_imagem', methods=['POST'])
-def cadastar_filme_imagem():
+def cadastrar_filme_imagem():
     token = request.headers.get('Authorization')  # Verifica token
 
     if not token:  # Se não tiver token
@@ -514,27 +518,35 @@ def cadastar_filme_imagem():
     duracao = request.form.get('duracao')
     link = request.form.get('link')  # Novo campo para o link
 
+    # Validação simples para evitar campos vazios (exemplo)
+    if not titulo:
+        return jsonify({"error": "O campo título é obrigatório."}), 400
+
     cursor = con.cursor()
     # Verifica se o filme já existe
-    cursor.execute("SELECT 1 FROM filmes WHERE TITULO = ?", (titulo,))
+    cursor.execute("SELECT 1 FROM filmes WHERE LOWER(TRIM(TITULO)) = LOWER(TRIM(?))", (titulo,))
     if cursor.fetchone():
         cursor.close()
         return jsonify({"error": "Filme já cadastrado"}), 400
 
     # Insere o novo filme e retorna o ID gerado
     cursor.execute(
-        "INSERT INTO filmes (TITULO, CLASSIFICACAO, GENERO, SINOPSE, DURACAO, LINK) VALUES (?, ?, ?, ?, ?, ?) RETURNING ID_filme",
+        "INSERT INTO filmes (TITULO, CLASSIFICACAO, GENERO, SINOPSE, DURACAO, LINK) VALUES (?, ?, ?, ?, ?, ?)",
         (titulo, classificacao, genero, sinopse, duracao, link)
     )
-    filme_id = cursor.fetchone()[0]
     con.commit()
 
+    # Recupera o ID do filme inserido
+    cursor.execute("SELECT ID_filme FROM filmes WHERE LOWER(TRIM(TITULO)) = LOWER(TRIM(?))", (titulo,))
+    filme_id = cursor.fetchone()[0]
+
+    imagem_path = None  # Define imagem_path para evitar erro se não enviar imagem
     if imagem:
         nome_imagem = f"{filme_id}.jpeg"
-        pasta_destino = os.path.join(app.config['UPLOAD_FILMES'], "Filmes")  # Onde vai ser salvo
-        os.makedirs(pasta_destino, exist_ok=True)  # Cria o diretório de destino (caso não exista)
+        pasta_destino = os.path.join(app.config['UPLOAD_FILMES'], "Filmes")
+        os.makedirs(pasta_destino, exist_ok=True)
         imagem_path = os.path.join(pasta_destino, nome_imagem)
-        imagem.save(imagem_path)  # Salva a imagem no caminho definido
+        imagem.save(imagem_path)
 
     cursor.close()
 
@@ -551,6 +563,7 @@ def cadastar_filme_imagem():
             'link': link
         }
     }), 201
+
 
 @app.route('/filmes', methods=['GET'])
 def listar_filmes():
@@ -581,32 +594,31 @@ def listar_filmes():
 @app.route('/filme_imagem/<int:id>', methods=['PUT'])
 def atualizar_filme(id):
     cur = con.cursor()
-    cur.execute("SELECT id_filme, titulo, genero, classificacao, sinopse, duracao, link, situacao FROM FILMES WHERE id_filme =?", (id,))
+    cur.execute("SELECT id_filme, titulo, genero, classificacao, sinopse, duracao, link, situacao FROM filmes WHERE id_filme = ?", (id,))
     filme_data = cur.fetchone()
 
-    if not filme_data:  # Se não existir, vai retornar um erro
+    if not filme_data:
         cur.close()
         return jsonify({"error": "Filme não foi encontrado"}), 404
 
-    titulo_armazenado = filme_data[1]  # Armazena o título do filme
+    titulo_armazenado = filme_data[1]
     situacao_armazenada = filme_data[7]
 
-    # Captura os dados do formulário e normaliza
-    titulo = normalizar_texto(request.form.get('titulo'))
-    classificacao = normalizar_texto(request.form.get('classificacao'))
-    genero = normalizar_texto(request.form.get('genero'))
-    sinopse = normalizar_texto(request.form.get('sinopse'))
-    duracao = normalizar_texto(request.form.get('duracao'))
-    link = normalizar_texto(request.form.get('link'))
-    situacao = normalizar_texto(request.form.get('situacao'))
-    imagem = request.files.get('imagem')  # Arquivo enviado
+    # Pega dados do formulário, se não vierem mantém os antigos
+    titulo = normalizar_texto(request.form.get('titulo') or titulo_armazenado)
+    classificacao = normalizar_texto(request.form.get('classificacao') or filme_data[3])
+    genero = normalizar_texto(request.form.get('genero') or filme_data[2])
+    sinopse = normalizar_texto(request.form.get('sinopse') or filme_data[4])
+    duracao = normalizar_texto(request.form.get('duracao') or filme_data[5])
+    link = normalizar_texto(request.form.get('link') or filme_data[6])
+    situacao = normalizar_texto(request.form.get('situacao') or situacao_armazenada)
 
-    if not situacao:
-        situacao = situacao_armazenada
+    imagem = request.files.get('imagem')
 
-    if titulo_armazenado != titulo:  # Verifica se o título foi modificado
-        cur.execute("SELECT 1 FROM filmes WHERE titulo = ?", (titulo,))
-        if cur.fetchone():  # Retorna com o erro
+    # Verifica se o título foi alterado e se já existe outro filme com o mesmo título
+    if titulo_armazenado != titulo:
+        cur.execute("SELECT 1 FROM filmes WHERE titulo = ? AND id_filme != ?", (titulo, id))
+        if cur.fetchone():
             cur.close()
             return jsonify({"message": "Este filme já foi cadastrado!"}), 400
 
@@ -614,10 +626,10 @@ def atualizar_filme(id):
         "UPDATE filmes SET titulo = ?, genero = ?, classificacao = ?, sinopse = ?, duracao = ?, link = ?, situacao = ? WHERE id_filme = ?",
         (titulo, genero, classificacao, sinopse, duracao, link, situacao, id)
     )
-
     con.commit()
+
     imagem_path = None
-    if imagem:  # Define nova imagem
+    if imagem:
         nome_imagem = f"{filme_data[0]}.jpeg"
         pasta_destino = os.path.join(app.config['UPLOAD_FILMES'], "Filmes")
         os.makedirs(pasta_destino, exist_ok=True)
@@ -757,7 +769,6 @@ def listar_sessoes(id_filme):
                s.id_filme, 
                f.titulo, 
                s.valor_unitario,
-               s.valor_promocional,
                f.duracao
         FROM sessoes s 
         LEFT JOIN filmes f ON f.id_filme = s.id_filme
@@ -922,7 +933,13 @@ def deletar_sessao(id):
         cur.close()
         return jsonify({"error": "Sessão não encontrada"}), 404
 
-    # Deleta a sessão
+    # Verifica se existem reservas associadas
+    cur.execute("SELECT 1 FROM reserva WHERE id_sessao = ?", (id,))
+    if cur.fetchone():
+        cur.close()
+        return jsonify({"error": "Não é possível excluir esta sessão pois existem reservas associadas."}), 400
+
+    # Se não tiver reservas, pode deletar
     cur.execute("DELETE FROM sessoes WHERE id_sessao = ?", (id,))
     con.commit()
     cur.close()
@@ -930,7 +947,8 @@ def deletar_sessao(id):
     return jsonify({
         'message': "Sessão excluída com sucesso!",
         'id_sessao': id
-    })
+    }), 200
+
 
 @app.route('/reservas', methods=['POST'])
 def fazer_reserva():
@@ -1604,11 +1622,11 @@ def conectar():
 def avaliar_filme():
     dados = request.get_json()
 
-    id_usuario = dados.get('id_usuario')
+    id_cadastro = dados.get('id_cadastro')
     id_filme = dados.get('id_filme')
     nota = dados.get('nota')
 
-    if id_usuario is None or id_filme is None or nota is None:
+    if id_cadastro is None or id_filme is None or nota is None:
         return jsonify({"erro": "Faltam dados"}), 400
 
     try:
@@ -1616,10 +1634,10 @@ def avaliar_filme():
 
         # Inserir a nova avaliação
         sql_insert = """
-            INSERT INTO avaliacoes (id_usuario, id_filme, nota, data_avaliacao)
+            INSERT INTO avaliacoes (id_cadastro, id_filme, nota, data_avaliacao)
             VALUES (?, ?, ?, ?)
         """
-        cur.execute(sql_insert, (id_usuario, id_filme, nota, date.today()))
+        cur.execute(sql_insert, (id_cadastro, id_filme, nota, date.today()))
         con.commit()
 
         # Calcular nova média
@@ -1638,7 +1656,7 @@ def avaliar_filme():
 
         return jsonify({
             "mensagem": "Avaliação salva com sucesso",
-            "id_usuario": id_usuario,
+            "id_cadastro": id_cadastro,
             "id_filme": id_filme,
             "nota": nota,
             "media_atualizada": round(float(media), 2)
@@ -1652,19 +1670,19 @@ def avaliar_filme():
             cur.close()
 @app.route('/avaliacoes', methods=['GET'])
 def verificar_se_usuario_votou():
-    id_usuario = request.args.get('id_usuario')
+    id_cadastro = request.args.get('id_cadastro')  # corrigido aqui
     id_filme = request.args.get('id_filme')
 
-    if not id_usuario or not id_filme:
+    if not id_cadastro or not id_filme:
         return jsonify({"erro": "Parâmetros faltando"}), 400
 
     try:
         cur = con.cursor()
         sql = """
         SELECT nota FROM avaliacoes
-        WHERE id_usuario = ? AND id_filme = ?
+        WHERE id_cadastro = ? AND id_filme = ?
         """
-        cur.execute(sql, (id_usuario, id_filme))
+        cur.execute(sql, (id_cadastro, id_filme))
         resultado = cur.fetchone()
 
         if resultado:
@@ -1678,6 +1696,7 @@ def verificar_se_usuario_votou():
     finally:
         if cur:
             cur.close()
+
 
 @app.route('/avaliacoes/media', methods=['GET'])
 def media_avaliacoes():
