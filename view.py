@@ -412,8 +412,8 @@ def esqueci_minha_senha():
 
     id_cadastro, nome = usuario
 
-    # Gera código e define validade de 10 minutos
-    codigo = str(random.randint(100000, 999999))
+    # Define um código fixo e validade de 10 minutos
+    codigo = "123456"  # sempre o mesmo
     expiracao = datetime.now() + timedelta(minutes=10)
     codigos_temp[email] = (codigo, expiracao)
 
